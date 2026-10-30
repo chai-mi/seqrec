@@ -124,37 +124,49 @@ def environment_info(device: torch.device | None = None) -> dict[str, Any]:
     return info
 
 
+def _cli_flag(field_name: str) -> str:
+    """Map a dataclass field name to the Tyro flag used by ``seqrec train``."""
+    return "--" + field_name.replace("_", "-")
+
+
+def _cli_value(value: Any) -> str:
+    """Render a field value the way it must appear after its flag."""
+    if isinstance(value, Path):
+        # POSIX separators keep the command copy-pasteable across shells and platforms.
+        return value.as_posix()
+    if isinstance(value, tuple):
+        return " ".join(_cli_value(item) for item in value)
+    return str(value)
+
+
 def reproduce_command(config: ExperimentConfig, exp_name: str) -> str:
-    """Build the exact single-run CLI command that reproduces an experiment."""
-    data, model, train = config.data, config.model, config.train
-    parts = [
-        "uv run seqrec train",
-        f"--name {model.name}",
-        f"--dataset {data.dataset}",
-        f"--split-strategy {data.split_strategy}",
-        f"--max-seq-len {data.resolved_max_seq_len}",
-        f"--hidden-size {model.hidden_size}",
-        f"--num-layers {model.num_layers}",
-        f"--num-heads {model.num_heads}",
-        f"--dropout {model.dropout}",
-        f"--loss-type {model.loss_type}",
-        f"--ggnn-steps {model.ggnn_steps}",
-        "--share-item-embeddings"
-        if model.share_item_embeddings
-        else "--no-share-item-embeddings",
-        f"--batch-size {data.batch_size}",
-        f"--eval-batch-size {data.eval_batch_size}",
-        f"--epochs {train.epochs}",
-        f"--lr {train.lr}",
-        f"--weight-decay {train.weight_decay}",
-        f"--grad-clip {train.grad_clip}",
-        f"--patience {train.patience}",
-        f"--val-every {train.val_every}",
-        "--use-amp" if train.use_amp else "--no-use-amp",
-        f"--seed {train.seed}",
-        f"--device {train.device}",
-        f"--exp-name {exp_name}",
-    ]
+    """Build the exact single-run CLI command that reproduces an experiment.
+
+    Every field of :class:`~seqrec.config.ExperimentConfig` is emitted (data construction,
+    model, optimisation and evaluation settings, plus all paths), so re-running the command
+    cannot silently fall back to defaults. Booleans become ``--flag`` / ``--no-flag``,
+    tuples are space separated, and ``None`` values are omitted (their Tyro default).
+    """
+    parts = ["uv run seqrec train"]
+    for struct in (config.data, config.model, config.train, config.eval):
+        for spec in dataclasses.fields(struct):
+            value = getattr(struct, spec.name)
+            flag = _cli_flag(spec.name)
+            if isinstance(value, bool):
+                parts.append(flag if value else f"--no-{spec.name.replace('_', '-')}")
+            elif value is None:
+                continue
+            else:
+                parts.append(f"{flag} {_cli_value(value)}")
+    for spec in dataclasses.fields(config):
+        if spec.name in {"data", "model", "train", "eval"}:
+            continue
+        value = getattr(config, spec.name)
+        if spec.name == "exp_name":
+            value = exp_name
+        elif value is None:
+            continue
+        parts.append(f"{_cli_flag(spec.name)} {_cli_value(value)}")
     return " ".join(parts)
 
 
@@ -346,6 +358,9 @@ class Trainer:
         best_epoch: int | None = None
         best_val_metrics: dict[str, float] = {}
         epochs_without_improvement = 0
+        # Only a checkpoint written by *this* run may be restored: a file left over from a
+        # previous run with the same `exp_name` must never be loaded silently.
+        saved_this_run = False
 
         for epoch in range(1, train_cfg.epochs + 1):
             train_loss, seconds = self._train_epoch(
@@ -373,6 +388,7 @@ class Trainer:
                     best_val_metrics = val_metrics
                     epochs_without_improvement = 0
                     self._save_checkpoint(epoch, val_metrics)
+                    saved_this_run = True
                 else:
                     epochs_without_improvement += 1
             history.append(record)
@@ -380,7 +396,23 @@ class Trainer:
             if epochs_without_improvement >= train_cfg.patience:
                 break
 
-        self._load_best_checkpoint()
+        if saved_this_run:
+            self._load_best_checkpoint()
+        elif history:
+            # No validation happened in this run (e.g. `val_every > epochs`), so there is no
+            # checkpoint of our own. Evaluate the final weights explicitly instead of loading
+            # a stale file, and report that epoch as the (only) validated one.
+            final_epoch = history[-1].epoch
+            final_metrics = self.evaluator.evaluate(
+                self.model,
+                self.bundle.val_loader,
+                "val",
+                show_progress=self.show_progress,
+            )
+            history[-1].val_metrics = final_metrics
+            history[-1].val_primary = final_metrics.get(primary_key, float("nan"))
+            best_epoch = final_epoch
+            best_val_metrics = final_metrics
         return history, best_epoch, best_val_metrics
 
     def _train_epoch(
@@ -435,8 +467,16 @@ class Trainer:
         )
 
     def _load_best_checkpoint(self) -> None:
+        """Restore the best checkpoint written by this run.
+
+        The caller must only invoke this after :meth:`_save_checkpoint` succeeded during the
+        current run; a missing file is a programming error rather than a silent no-op.
+        """
         if not self.checkpoint_path.exists():
-            return
+            raise FileNotFoundError(
+                f"No checkpoint was written by this run at {self.checkpoint_path}; "
+                "refusing to fall back to a checkpoint from a previous run."
+            )
         state = torch.load(
             self.checkpoint_path, map_location=self.device, weights_only=True
         )

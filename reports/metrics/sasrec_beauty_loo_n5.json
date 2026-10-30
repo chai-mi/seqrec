@@ -48,7 +48,7 @@
       "oracle_middle_mask": false
     },
     "exp_name": "sasrec_beauty_loo_n5",
-    "metrics_dir": "reports\\metrics_fixed",
+    "metrics_dir": "reports/metrics",
     "checkpoints_dir": "data\\processed\\checkpoints"
   },
   "dataset": {
@@ -80,7 +80,7 @@
     "gpu": "NVIDIA GeForce RTX 3050 Ti Laptop GPU",
     "gpu_capability": "8.6"
   },
-  "reproduce": "uv run seqrec train --name sasrec --dataset beauty --split-strategy loo --max-seq-len 5 --hidden-size 64 --num-layers 2 --num-heads 2 --dropout 0.2 --loss-type ce --ggnn-steps 1 --share-item-embeddings --batch-size 256 --eval-batch-size 256 --epochs 200 --lr 0.001 --weight-decay 0.0001 --grad-clip 5.0 --patience 10 --val-every 1 --use-amp --seed 42 --device cuda --exp-name sasrec_beauty_loo_n5",
+  "reproduce": "uv run seqrec train --dataset beauty --split-strategy loo --data-dir data/processed --max-seq-len 5 --batch-size 256 --eval-batch-size 256 --num-workers 0 --no-sliding-window --sliding-step 50 --mask-prob 0.2 --last-item-mask-ratio 0.1 --max-prefixes-per-user 50 --name sasrec --hidden-size 64 --num-layers 2 --num-heads 2 --dropout 0.2 --loss-type ce --ggnn-steps 1 --share-item-embeddings --epochs 200 --lr 0.001 --weight-decay 0.0001 --grad-clip 5.0 --patience 10 --val-every 1 --use-amp --seed 42 --device cuda --ks 5 10 20 --primary-k 10 --num-neg-samples 100 --compute-sampled-metrics --no-oracle-middle-mask --exp-name sasrec_beauty_loo_n5 --metrics-dir reports/metrics --checkpoints-dir data/processed/checkpoints",
   "num_parameters": 874944,
   "best_epoch": 11,
   "best_val_metrics": {
@@ -1011,6 +1011,7 @@
     "recomputed_from_checkpoint": true,
     "recomputed_with_git_commit": "3d7c6781e7e3303f4bb858cf9c07064ffd3178e4",
     "checkpoint": "data\\processed\\checkpoints\\sasrec_beauty_loo_n5.pt",
-    "history_sampled_metrics": "removed: per-epoch sampled_* values were produced under the pre-fix column-order tie-break and cannot be recomputed without per-epoch weights; protocol-consistent sampled metrics are reported in test_metrics and best_val_metrics only"
+    "history_sampled_metrics": "removed: per-epoch sampled_* values were produced under the pre-fix column-order tie-break and cannot be recomputed without per-epoch weights; protocol-consistent sampled metrics are reported in test_metrics and best_val_metrics only",
+    "reproduce_roundtrip_verified": true
   }
 }
