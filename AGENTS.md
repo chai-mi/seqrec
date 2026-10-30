@@ -21,7 +21,7 @@
 - `@PLAN.md`：**项目总体规划与当前进度面板**（必读，开头声明了当前所处阶段与待办任务）。
 - `@任务介绍.md`：课程原始题目要求、背景说明与参考论文链接。
 
-> **进度同步规范**：每完成一个子任务或阶段性里程碑后，必须同步更新 `PLAN.md` 开头的「当前进度」区块以及正文中的任务复选框。
+> **进度同步规范**：仅在主分支（`main`）阶段性里程碑合入时由项目负责人统一更新 `PLAN.md`；**各协作成员在自己的功能分支开发期间请勿修改 `PLAN.md`**，以免合并 Pull Request 时产生冲突。
 
 ---
 
@@ -103,3 +103,27 @@
    - 主评测协议采用 **全物品库排序（Full-Ranking）**，辅以 **1正+100负采样排序（Sampled-Ranking）** 复现原论文设定。
 3. **可复现性**：
    - 所有实验必须固定随机种子（`seed=42`），并在 `reports/metrics/` 下用 `orjson` 保存完整超参数配置、训练耗时、验证集最优曲线与测试集各项分桶指标。
+
+---
+
+## 6. 多人多 Agent 协作与 Git 分支规范（严格遵守）
+
+本项目采用多人协同 + AI Agent 辅助开发模式，所有协作者及其 AI Agent 必须严格遵守以下君子协定：
+
+1. **严禁直接向 `main` 分支推送代码**：
+   - 除仓库管理员（`@chai-mi`）外，**任何人及任何 Agent 严禁直接执行 `git push origin main`**。
+   - 认领任务后必须从最新 `main` 切出独立功能分支开发（如 `git checkout -b feat/task1-engine-causal`、`feat/task2-bert4rec`、`feat/task3-srgnn-plots`），完成后推送功能分支并通过 `gh pr create` 提交 Pull Request。
+2. **严格遵守 GitHub Issue 中的文件边界（File Ownership）**：
+   - 请通过 `gh issue list` / `gh issue view <编号>` 查看各自认领的任务说明。
+   - **仅允许新建或修改所属 Issue 白名单内的文件**；严禁擅自修改 `pyproject.toml`、`uv.lock`、`PLAN.md`、`src/seqrec/data/*` 以及其他队友负责的模型文件。
+   - 若确实需要在 `src/seqrec/models/__init__.py` 或 `src/seqrec/cli.py` 中注册自己的模型/命令，请保持最小化改动，切勿重排或删除他人代码。
+3. **提交 PR 前的自检门禁**：
+   - 每次提交 PR 前，必须确保在本地通过静态检查：
+     ```bash
+     uv run ruff check .
+     uv run ruff format --check .
+     uv run ty check
+     ```
+4. **实验指标独立文件存储**：
+   - 各模型产出的评测结果必须按各自模型前缀独立保存为 `reports/metrics/{model}_{dataset}_{tag}.json`（如 `sasrec_beauty_loo.json`），禁止多个模型共用并覆写同一个 JSON 文件。
+
