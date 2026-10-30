@@ -2,17 +2,19 @@
 
 ## 📌 当前进度 (Current Progress)
 
-- **当前所处阶段**：`Phase 1 已完成 — 待启动 Phase 2（统一训练评测框架与四大模型实现）`
-- **整体完成度**：`30%`（已完成工程初始化、强类型配置 `config.py`、统一 CLI `cli.py`、双数据集 5-core 预处理与 LOO/Temporal 切分 `preprocess.py`、三范式 PyTorch Dataset `dataset.py` 及 Marimo 交互式数据探索笔记本）
+- **当前所处阶段**：`Phase 2 & Phase 3 进行中（Task 1 统一训练评测引擎与单向模型组已合入 — 待完成 Task 2 BERT4Rec 与 Task 3 SR-GNN）`
+- **整体完成度**：`60%`（已完成 Phase 1 数据底座，以及 Task 1 / PR #4：模型抽象基类 `base.py`、统一训练器 `trainer.py`、统一评测器 `evaluator.py`、`Pop` / `GRU4Rec` / `SASRec` 三模型实现，以及两大数据集上 3 模型 × 9 窗口配置共 27 组全库/采样与分桶基准实验）
 - **最近完成事项**：
-  - 在 `AGENTS.md` 中补充 Marimo 笔记本规范（`with app.setup:` 统一管理全部包导入，类与函数各自独占单元格 `@app.function` / `@app.class_definition`）；
-  - 完成 `src/seqrec/config.py` 与 `src/seqrec/cli.py`（支持 `uv run seqrec preprocess`、`uv run seqrec inspect-data`、`uv run seqrec train`）；
-  - 完成 `src/seqrec/data/preprocess.py`：拉取并处理 `Amazon-Beauty`（22,363 用户、12,101 物品、198,502 交互）与 `MovieLens-1M`（6,040 用户、3,416 物品、999,611 交互），生成 LOO 与 Global Temporal 切分 Parquet 及 `metadata.json`；
-  - 完成 `src/seqrec/data/dataset.py`：实现 `CausalSeqDataset`、`ClozeSeqDataset`、`SessionGraphDataset`（含纯 PyTorch 向量化会话图构建）与统一评测 `EvalSeqDataset`；
-  - 完成 `notebooks/phase1_data_explore.py` 交互式数据探索与验证笔记本，并通过 `ruff`、`ty`、`marimo check` 全部检查。
+  - 合入 **PR #4 (Task 1 / Issue #1)**：
+    - 完成 `src/seqrec/models/base.py`（`SequentialRecommender` 抽象基类、`score_position` 打分位置契约、分块 `ce` / `bce` / `bpr_max` 损失函数）与 `src/seqrec/models/__init__.py`（支持 `bert4rec` / `srgnn` 惰性导入）；
+    - 完成 `src/seqrec/models/baselines.py` (`Pop`)、`src/seqrec/models/gru4rec.py` (`GRU4Rec`)、`src/seqrec/models/sasrec.py` (`SASRec`)；
+    - 完成 `src/seqrec/engine/evaluator.py`（严格同分 item ID 升序打破并列、全库 Full-Ranking 与合法候选分布 1正100负均匀/流行度采样评测、序列长度分桶、目标热度分桶、`ARP@10`、`Coverage@10` 及 `oracle_middle_mask` 评测钩子）；
+    - 完成 `src/seqrec/engine/trainer.py` 与 `src/seqrec/cli.py`（支持 AMP、早停与最优权重回滚、全字段 `reproduce` 往返校验，以及 `uv run seqrec train` / `uv run seqrec sweep`）；
+    - 产出 `Pop`、`GRU4Rec`、`SASRec` 在 `Amazon-Beauty`（$N \in \{5, 10, 20, 50\}$）与 `MovieLens-1M`（$N \in \{10, 20, 50, 100, 200\}$）上的 **27 份完整评测 JSON**（持久化于 `reports/metrics/`）。
 - **下一步行动 (Next Actions)**：
-  1. 实现 `src/seqrec/models/base.py` 与五类模型（`Pop`, `GRU4Rec`, `SASRec`, `BERT4Rec`, `SR-GNN`）；
-  2. 实现 `src/seqrec/engine/evaluator.py` 与 `src/seqrec/engine/trainer.py`，跑通前向/反向传播与评测闭环。
+  1. 推进 **Task 2 (Issue #3)**：实现 `src/seqrec/models/bert4rec.py` 与 `src/seqrec/analysis/leakage_exp.py`，完成 BERT4Rec 双数据集主实验、窗口消融与专题三（Pure Cloze / +Last Mask / Oracle Middle Mask 及 LOO vs Global Temporal Split）实验；
+  2. 推进 **Task 3 (Issue #2)**：实现 `src/seqrec/models/srgnn.py` 与 `src/seqrec/analysis/plot_results.py`，完成 SR-GNN 双数据集主实验与窗口消融，汇总全部模型 JSON 产出“序列长度—模型类型—指标”三维对照表及 Vega-Altair 全套矢量图表；
+  3. 撰写 `reports/main.typ` 最终研究报告。
 
 ### 里程碑状态总览
 
@@ -20,9 +22,9 @@
 | :--- | :--- | :---: | :--- |
 | **Phase 0** | 项目立项与架构规划 | ✅ 已完成 | `AGENTS.md`, `PLAN.md` |
 | **Phase 1** | 工程初始化与数据底座搭建 | ✅ 已完成 | `config.py`, `cli.py`, `preprocess.py`, `dataset.py`, `phase1_data_explore.py` |
-| **Phase 2** | 统一训练评测框架与四大模型实现 | ⏳ 待开始 | `Trainer`, `Evaluator`, `Pop`, `GRU4Rec`, `SASRec`, `BERT4Rec`, `SR-GNN` |
-| **Phase 3** | 两大数据集主实验与基准对齐 | ⏳ 待开始 | MovieLens-1M 与 Amazon-Beauty 全库/采样评测基准结果 (`orjson`) |
-| **Phase 4** | 三大专题深度实验与三维对照表产出 | ⏳ 待开始 | 序列长度三维对照表、长尾/流行度偏差分析、信息泄露验证、矢量图表与 Typst 报告 |
+| **Phase 2** | 统一训练评测框架与四大模型实现 | 🔄 进行中 | 已完成 `Trainer`, `Evaluator`, `Pop`, `GRU4Rec`, `SASRec`；待合入 `BERT4Rec`, `SR-GNN` |
+| **Phase 3** | 两大数据集主实验与基准对齐 | 🔄 进行中 | 已产出 `Pop`/`GRU4Rec`/`SASRec` 27 组 `orjson` 评测结果；待补充 `BERT4Rec`, `SR-GNN` |
+| **Phase 4** | 三大专题深度实验与三维对照表产出 | 🔄 进行中 | 已产出单向模型组窗口 $N$、长度/热度分桶与采样偏差数据；待完成信息泄露实验、全模型三维表、矢量图表与 Typst 报告 |
 
 ---
 
@@ -144,22 +146,23 @@
 - [x] 编写 `src/seqrec/data/dataset.py`：实现支持 Causal 序列、Cloze 掩码序列、以及 SR-GNN 会话图结构的 Dataset 与 DataLoader（全程严格添加 Type Hints）
 
 ### Phase 2：统一训练评测框架与四大模型实现
-- [ ] 实现 `src/seqrec/models/base.py` 与 `src/seqrec/models/baselines.py` (`Pop`)
-- [ ] 实现 `src/seqrec/models/gru4rec.py` (`GRU4Rec`)
-- [ ] 实现 `src/seqrec/models/sasrec.py` (`SASRec`)
-- [ ] 实现 `src/seqrec/models/bert4rec.py` (`BERT4Rec`)
-- [ ] 实现 `src/seqrec/models/srgnn.py` (`SR-GNN`)
-- [ ] 实现 `src/seqrec/engine/evaluator.py`（基于 `torchmetrics` 支持全库/采样评测、按序列长度分桶、按物品热度分桶、ARP/Coverage 统计）
-- [ ] 实现 `src/seqrec/engine/trainer.py` 并通过 `ruff` / `ty` 静态检查（忽略 `ty` 对 `altair` 的已知误报 bug）与 `marimo` 交互式验证确认所有模型前向/反向传播及评测链路畅通
+- [x] 实现 `src/seqrec/models/base.py` 与 `src/seqrec/models/baselines.py` (`Pop`)
+- [x] 实现 `src/seqrec/models/gru4rec.py` (`GRU4Rec`)
+- [x] 实现 `src/seqrec/models/sasrec.py` (`SASRec`)
+- [ ] 实现 `src/seqrec/models/bert4rec.py` (`BERT4Rec`)（Task 2 / Issue #3）
+- [ ] 实现 `src/seqrec/models/srgnn.py` (`SR-GNN`)（Task 3 / Issue #2）
+- [x] 实现 `src/seqrec/engine/evaluator.py`（基于 `torchmetrics` 支持全库/采样评测、按序列长度分桶、按物品热度分桶、ARP/Coverage 统计及 `oracle_middle_mask` 评测钩子）
+- [x] 实现 `src/seqrec/engine/trainer.py`（支持 AMP、梯度裁剪、Early Stopping、完整实验元数据与可复现命令导出）并通过 `ruff` / `ty` 静态检查
 
 ### Phase 3：两大数据集主实验与基准对齐
-- [ ] 在 Amazon-Beauty 上完成 `Pop`, `GRU4Rec`, `SASRec`, `BERT4Rec`, `SR-GNN` 训练与全量评测
-- [ ] 在 MovieLens-1M 上完成 `Pop`, `GRU4Rec`, `SASRec`, `BERT4Rec`, `SR-GNN` 训练与全量评测
-- [ ] 汇总主实验指标（Full-Ranking vs Sampled-Ranking）并持久化至 `reports/metrics/`
+- [x] 在 Amazon-Beauty 上完成单向模型组（`Pop`, `GRU4Rec`, `SASRec`）训练、窗口 $N \in \{5, 10, 20, 50\}$ 消融与全量评测（12 份指标已落盘 `reports/metrics/`）
+- [x] 在 MovieLens-1M 上完成单向模型组（`Pop`, `GRU4Rec`, `SASRec`）训练、窗口 $N \in \{10, 20, 50, 100, 200\}$ 消融与全量评测（15 份指标已落盘 `reports/metrics/`）
+- [ ] 在 Amazon-Beauty 与 MovieLens-1M 上完成 `BERT4Rec`（Task 2）与 `SR-GNN`（Task 3）训练及全量评测
+- [ ] 汇总全模型主实验指标（Full-Ranking vs Sampled-Ranking）并持久化至 `reports/metrics/`
 
 ### Phase 4：三大专题深度实验与结论产出
-- [ ] 完成专题一：生成“序列长度—模型类型—指标”三维对照表及截断窗口 $N$ 敏感性实验数据
-- [ ] 完成专题二：生成 Head/Mid/Tail 长尾召回率对比与流行度偏差（ARP / Coverage）实验数据
-- [ ] 完成专题三：完成 BERT4Rec 掩码消融/Oracle 实验与 Global Temporal Split 时间泄露对照实验
-- [ ] 编写 `src/seqrec/analysis/plot_results.py` 使用 `vega-altair` + `vl-convert-python` 导出全套 `.svg` / `.pdf` 图表至 `reports/figures/`
+- [ ] 完成专题一：汇总全模型“序列长度—模型类型—指标”三维对照表及截断窗口 $N$ 敏感性实验数据（`Pop`/`GRU4Rec`/`SASRec` 数据已就绪，待合入 `BERT4Rec`/`SR-GNN`）
+- [ ] 完成专题二：汇总全模型 Head/Mid/Tail 长尾召回率对比与流行度偏差（ARP / Coverage）实验数据（`Pop`/`GRU4Rec`/`SASRec` 数据已就绪，待合入 `BERT4Rec`/`SR-GNN`）
+- [ ] 完成专题三：编写 `src/seqrec/analysis/leakage_exp.py`，完成 BERT4Rec 掩码消融/Oracle 实验与 Global Temporal Split 时间泄露对照实验（Task 2 / Issue #3）
+- [ ] 编写 `src/seqrec/analysis/plot_results.py` 使用 `vega-altair` + `vl-convert-python` 导出全套 `.svg` / `.pdf` 图表至 `reports/figures/`（Task 3 / Issue #2）
 - [ ] 在 `reports/main.typ` 中撰写最终实验分析报告（重点总结**短序列场景选型结论**与**单向 vs 双向之争的核心发现**）
