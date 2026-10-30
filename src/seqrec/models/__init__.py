@@ -107,6 +107,7 @@ def _build_lazy_model(
 
     model_cls: type[Any] = getattr(module, class_name)
     candidates: dict[str, Any] = {
+        "config": config,
         "num_items": num_items,
         "max_seq_len": max_seq_len,
         "hidden_size": config.hidden_size,
