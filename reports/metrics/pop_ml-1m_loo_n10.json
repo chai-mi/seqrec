@@ -48,7 +48,7 @@
       "oracle_middle_mask": false
     },
     "exp_name": "pop_ml-1m_loo_n10",
-    "metrics_dir": "reports\\metrics_rerun",
+    "metrics_dir": "reports\\metrics_fixed",
     "checkpoints_dir": "data\\processed\\checkpoints"
   },
   "dataset": {
@@ -75,7 +75,7 @@
     "cpu_count": 16,
     "torch_threads": 8,
     "seqrec_version": "0.1.0",
-    "git_commit": "d7b36eb864f3769f1cb4cf161ba4ca91325fa146",
+    "git_commit": "e6f89d70c328bfc242cda97a436993a184e731e0",
     "git_dirty": false,
     "gpu": "NVIDIA GeForce RTX 3050 Ti Laptop GPU",
     "gpu_capability": "8.6"
@@ -90,12 +90,12 @@
     "NDCG@10": 0.022468201696449374,
     "HR@20": 0.07466887417218543,
     "NDCG@20": 0.02985831250679066,
-    "MRR": 0.02284260017622067,
+    "MRR": 0.02283678808274072,
     "ARP@10": 2513.2613417063326,
-    "sampled_uniform/HR@10": 0.4316225165562914,
-    "sampled_uniform/NDCG@10": 0.2388695331871548,
-    "sampled_popularity/HR@10": 0.1271523178807947,
-    "sampled_popularity/NDCG@10": 0.06268574129905265,
+    "sampled_uniform/HR@10": 0.4332781456953642,
+    "sampled_uniform/NDCG@10": 0.24039477455790154,
+    "sampled_popularity/HR@10": 0.13228476821192053,
+    "sampled_popularity/NDCG@10": 0.06279395691728601,
     "len:16-50/HR@10": 0.051678209909429944,
     "len:>50/HR@10": 0.04227720393946673,
     "len:16-50/NDCG@10": 0.02657023681265102,
@@ -120,13 +120,13 @@
     "HR@10": 0.040894039735099336,
     "NDCG@10": 0.0199973185462224,
     "HR@20": 0.06837748344370861,
-    "NDCG@20": 0.026898970053449867,
-    "MRR": 0.02086708550483034,
+    "NDCG@20": 0.026897369724100093,
+    "MRR": 0.020859158606321336,
     "ARP@10": 2511.676639662989,
-    "sampled_uniform/HR@10": 0.41357615894039734,
-    "sampled_uniform/NDCG@10": 0.2320000737918553,
-    "sampled_popularity/HR@10": 0.12748344370860928,
-    "sampled_popularity/NDCG@10": 0.0597652718424203,
+    "sampled_uniform/HR@10": 0.41456953642384103,
+    "sampled_uniform/NDCG@10": 0.2298902883129836,
+    "sampled_popularity/HR@10": 0.1304635761589404,
+    "sampled_popularity/NDCG@10": 0.06212138899864089,
     "len:16-50/HR@10": 0.04953728905824714,
     "len:>50/HR@10": 0.037116345467523196,
     "len:16-50/NDCG@10": 0.02435554122454321,
@@ -134,7 +134,7 @@
     "pop:Head/HR@10": 0.0728613569321534,
     "pop:Mid/HR@10": 0.0,
     "pop:Tail/HR@10": 0.0,
-    "pop:Head/NDCG@10": 0.03562944071362339,
+    "pop:Head/NDCG@10": 0.03562944071362338,
     "pop:Mid/NDCG@10": 0.0,
     "pop:Tail/NDCG@10": 0.0,
     "len:16-50/count": 1837.0,
@@ -147,8 +147,8 @@
   },
   "history": [],
   "timing": {
-    "train_seconds": 0.9383582999998907,
-    "eval_seconds": 0.7437305000003107,
-    "total_seconds": 1.6820888000002014
+    "train_seconds": 0.7086961999993946,
+    "eval_seconds": 0.51339039999948,
+    "total_seconds": 1.2220865999988746
   }
 }
