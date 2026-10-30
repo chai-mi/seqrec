@@ -328,17 +328,21 @@ class Evaluator:
     ) -> dict[str, torch.Tensor]:
         """``HR@k`` / ``NDCG@k`` over ``1`` positive + ``num_neg_samples`` sampled negatives.
 
-        The positive candidate is placed at column ``0`` and ranked with the same total order
-        rule as the full-ranking metrics (score descending, then candidate index ascending).
+        The rank is computed directly from the *item ids* using the same total order as the
+        full-ranking metrics (score descending, then **item id ascending**). Comparing ids
+        instead of candidate positions matters: the positive sits at column ``0``, so a stable
+        sort over columns would silently rank it ahead of every tied negative. The result is
+        invariant to the order in which negatives are sampled.
         """
         k = self.config.primary_k
         negatives = self._sample_negatives(batch, self.config.num_neg_samples, strategy)
         positives = batch["target_id"].unsqueeze(1)
-        candidates = torch.cat(
-            [scores.gather(1, positives), scores.gather(1, negatives)], dim=1
+        pos_scores = scores.gather(1, positives)
+        neg_scores = scores.gather(1, negatives)
+        better = (neg_scores > pos_scores) | (
+            (neg_scores == pos_scores) & (negatives < positives)
         )
-        order = self._total_order(candidates)
-        rank = (order == 0).int().argmax(dim=1).double()
+        rank = better.sum(dim=1).double()
         hit = rank < k
         return {
             f"HR@{k}": hit.double(),
