@@ -14,6 +14,8 @@ __generated_with = "0.25.2"
 app = marimo.App(width="medium")
 
 with app.setup:
+    import ast
+    import hashlib
     import io
     import sys
     from collections.abc import Sized
@@ -769,6 +771,77 @@ def comparison_tables(results: pl.DataFrame) -> dict[str, pl.DataFrame]:
 
 
 @app.function
+def verify_recorded_sources(
+    recorded: dict[str, str], current: dict[str, str], snapshots: dict[str, str]
+) -> list[str]:
+    """Verify historical byte hashes and permit only AST-identical formatting drift.
+
+    This is an audit of historical results, not a cache invalidation bypass. The
+    production runner still requires exact byte hashes before reusing a run.
+    """
+    if set(recorded) - {"backend"} != set(current):
+        raise ValueError("Historical/current source file sets differ")
+    if recorded.get("backend") != current["analysis/leakage_exp.py"]:
+        raise ValueError("The training backend source has changed")
+    root = Path(__file__).resolve().parents[1] / "src/seqrec"
+    formatted: list[str] = []
+    for name, digest in current.items():
+        if recorded[name] == digest:
+            continue
+        historical = snapshots.get(name)
+        if (
+            historical is None
+            or hashlib.sha256(historical.encode()).hexdigest() != recorded[name]
+        ):
+            raise ValueError(f"Missing or tampered historical source snapshot: {name}")
+        old_ast = ast.dump(ast.parse(historical), include_attributes=False)
+        new_ast = ast.dump(
+            ast.parse((root / name).read_text()), include_attributes=False
+        )
+        if old_ast != new_ast:
+            raise ValueError(f"Source changed beyond formatting: {name}")
+        formatted.append(name)
+    return formatted
+
+
+@app.function
+def check_source_snapshot_guards() -> str:
+    """Reject corrupted snapshots and semantic changes, even with matching fake hashes."""
+    root = Path(__file__).resolve().parents[1] / "reports/metrics"
+    manifest = orjson.loads(
+        (root / "leakage_training_source_snapshot.json").read_bytes()
+    )
+    snapshots: dict[str, str] = manifest["files"]
+    current = source_fingerprints()
+    recorded = {**current, "backend": current["analysis/leakage_exp.py"]}
+    recorded.update(
+        {
+            name: hashlib.sha256(text.encode()).hexdigest()
+            for name, text in snapshots.items()
+        }
+    )
+    assert set(verify_recorded_sources(recorded, current, snapshots)) == set(snapshots)
+    name = "data/__init__.py"
+    broken = dict(snapshots)
+    broken[name] += "\nraise RuntimeError('not a formatting change')\n"
+    for hashes in (
+        recorded,
+        {**recorded, name: hashlib.sha256(broken[name].encode()).hexdigest()},
+    ):
+        try:
+            verify_recorded_sources(hashes, current, broken)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(
+                "Source snapshot corruption/semantic change was accepted"
+            )
+    return (
+        "historical SHA-256 / formatting-only AST equivalence / tamper guards: passed"
+    )
+
+
+@app.function
 def audit_completed_experiments(metrics_dir: Path) -> dict[str, int]:
     """Check real artifacts, checkpoint identity, selection curves and bucket consistency."""
     plan = build_plan(
@@ -781,6 +854,11 @@ def audit_completed_experiments(metrics_dir: Path) -> dict[str, int]:
     )
     completed = 0
     source = source_fingerprints()
+    snapshot_path = (
+        Path(__file__).resolve().parents[1]
+        / "reports/metrics/leakage_training_source_snapshot.json"
+    )
+    snapshots: dict[str, str] = orjson.loads(snapshot_path.read_bytes())["files"]
     for spec in plan:
         path = result_path(spec)
         if not path.exists():
@@ -791,10 +869,7 @@ def audit_completed_experiments(metrics_dir: Path) -> dict[str, int]:
             and record["schema_version"] == SCHEMA_VERSION
         )
         assert record["config"] == orjson.loads(json_bytes(spec.config))
-        assert all(
-            record["provenance"]["source"][key] == value
-            for key, value in source.items()
-        )
+        verify_recorded_sources(record["provenance"]["source"], source, snapshots)
         assert "WITH replacement" in record["protocol"]["sampling"]
         if spec.config.model.name != "pop":
             checkpoint = Path(record["checkpoint"])
@@ -914,8 +989,13 @@ def _():
     失败后重试后处理。正在训练的优化器状态不支持中途续训，停止后会从头训练该配置。
     原始 Trainer 指标字段保留给 Task 3，并另外保存配对 Oracle 和采样分桶结果。
 
-    本轮新增文件的 Ruff / 类型检查 / Marimo 检查通过。全仓格式检查仍有已有文件
-    不合规，完整 `ty check` 仍有旧探索笔记本的两处 Altair 属性诊断；未越界修改。
+    维护 PR #6 仅做格式化及两处局部 Altair 类型注释，全仓 Ruff、格式与 ty 检查均通过。
+    历史 27 组实验的数值及原始来源哈希没有改写。由于格式化改变了数据模块的字节哈希，
+    `leakage_training_source_snapshot.json` 保留这三个模块的训练时原文；审计先核对历史
+    SHA-256，再确认当前 AST 相同，不把真正的代码行为变化当成格式变化。
+    生产编排器依然严格校验字节来源：格式化后若要重新训练，请用新的 `--metrics-dir`
+    和 `--checkpoints-dir`，不能冒充旧版本的断点续跑。查看已有结果不需要重跑实验。
+    指标读取程序应按 `config`/`status` 区分实验记录；源码快照的 kind 为 training_source_snapshot。
     """)
     return
 
@@ -933,6 +1013,7 @@ def _():
         check_experiment_plan(),
         check_orchestration(model_type),
         check_shared_engine(),
+        check_source_snapshot_guards(),
     ]
     for _result in check_results:
         print(_result)
