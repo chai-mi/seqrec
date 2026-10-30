@@ -54,7 +54,7 @@ from seqrec.config import (
 )
 from seqrec.data.dataset import DataBundle, EvalBatch, build_databundle
 from seqrec.engine.evaluator import Evaluator
-from seqrec.engine.trainer import run_experiment
+from seqrec.engine.trainer import resolve_device, run_experiment
 from seqrec.models import build_model
 from seqrec.models.base import SequentialRecommender
 
@@ -145,56 +145,28 @@ def _json_default(obj: Any) -> Any:
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serialisable")
 
 
-def _config_signature(config: ExperimentConfig) -> dict[str, Any]:
-    """Hyper-parameters that must match before an existing result may be reused."""
-    data = config.data
-    model = config.model
-    train = config.train
-    return {
-        "dataset": data.dataset,
-        "split_strategy": data.split_strategy,
-        "max_seq_len": data.resolved_max_seq_len,
-        "mask_prob": data.mask_prob,
-        "last_item_mask_ratio": data.last_item_mask_ratio,
-        "sliding_window": data.sliding_window,
-        "model": model.name,
-        "hidden_size": model.hidden_size,
-        "num_layers": model.num_layers,
-        "num_heads": model.num_heads,
-        "dropout": model.dropout,
-        "loss_type": model.loss_type,
-        "share_item_embeddings": model.share_item_embeddings,
-        "epochs": train.epochs,
-        "lr": train.lr,
-        "seed": train.seed,
-        "patience": train.patience,
-    }
+#: Experiment names (with their comparable configs) freshly generated during this process.
+#: :func:`run_all` uses this so the default-window BERT4Rec run produced by the main sweep
+#: is reused by the mismatch / split-comparison phases instead of being trained repeatedly.
+_SESSION_FRESH: dict[str, dict[str, Any]] = {}
 
 
-def _existing_signature(raw_cfg: dict[str, Any]) -> dict[str, Any]:
-    """Extract the same signature from the ``config`` block of a saved result JSON."""
-    data = raw_cfg["data"]
-    model = raw_cfg["model"]
-    train = raw_cfg["train"]
-    return {
-        "dataset": data.get("dataset"),
-        "split_strategy": data.get("split_strategy"),
-        "max_seq_len": data.get("max_seq_len"),
-        "mask_prob": data.get("mask_prob", 0.2),
-        "last_item_mask_ratio": data.get("last_item_mask_ratio", 0.1),
-        "sliding_window": data.get("sliding_window", False),
-        "model": model.get("name"),
-        "hidden_size": model.get("hidden_size"),
-        "num_layers": model.get("num_layers"),
-        "num_heads": model.get("num_heads"),
-        "dropout": model.get("dropout"),
-        "loss_type": model.get("loss_type"),
-        "share_item_embeddings": model.get("share_item_embeddings", True),
-        "epochs": train.get("epochs"),
-        "lr": train.get("lr"),
-        "seed": train.get("seed"),
-        "patience": train.get("patience"),
-    }
+def _comparable_config(config: ExperimentConfig) -> dict[str, Any]:
+    """Full config with operational-only fields normalized away.
+
+    Cache-reuse decisions compare this normalized dict so that every result-affecting
+    hyper-parameter (optimizer, architecture, data, evaluation protocol) is checked, while
+    purely operational values (paths, ``exp_name``, ``device``, ``num_workers``) are
+    ignored.
+    """
+    raw = dataclasses.asdict(config)
+    raw["exp_name"] = None
+    raw["metrics_dir"] = None
+    raw["checkpoints_dir"] = None
+    raw["data"]["data_dir"] = None
+    raw["data"]["num_workers"] = 0
+    raw["train"]["device"] = None
+    return raw
 
 
 def _run_if_missing(
@@ -204,32 +176,45 @@ def _run_if_missing(
     show_progress: bool = True,
     require_checkpoint: bool = False,
 ) -> Path:
-    """Run :func:`run_experiment` unless a reusable result already exists (idempotent).
+    """Run :func:`run_experiment` unless a reusable result already exists.
 
-    A result is reused only when its metrics JSON exists **and** its recorded
-    hyper-parameters match ``config``; experiments that need checkpoint re-evaluation
-    (Oracle / matched control) additionally require the ``.pt`` checkpoint, which is *not*
-    version controlled. Missing or mismatched artifacts trigger a fresh run, so the script
-    never silently mixes results from different configurations.
+    A result is reused in one of two cases:
+
+    - it was **just generated** during this process (``_SESSION_FRESH``), which lets
+      :func:`run_all` reuse the default-window main experiment across phases even with
+      ``resume=False``;
+    - ``resume`` is enabled, its metrics JSON exists, its recorded config matches the
+      requested one, and (when ``require_checkpoint``) the ``.pt`` checkpoint exists.
+
+    Missing, mismatched or stale artifacts trigger a fresh run, so the script never
+    silently mixes results from different configurations.
     """
-    target = config.metrics_dir / f"{config.exp_name}.json"
-    checkpoint = config.checkpoints_dir / f"{config.exp_name}.pt"
+    exp_name = config.exp_name
+    if exp_name is None:
+        raise ValueError(
+            "ExperimentConfig.exp_name must be set for leakage experiments"
+        )
+    target = config.metrics_dir / f"{exp_name}.json"
+    checkpoint = config.checkpoints_dir / f"{exp_name}.pt"
+    signature = _comparable_config(config)
+
+    if _SESSION_FRESH.get(exp_name) == signature:
+        console.print(f"[dim]reuse this-run result[/dim] {exp_name}")
+        return target
+
     if resume and target.exists():
-        existing = _existing_signature(orjson.loads(target.read_bytes())["config"])
-        signature_ok = existing == _config_signature(config)
-        if signature_ok and (not require_checkpoint or checkpoint.exists()):
-            console.print(f"[yellow]skip existing[/yellow] {config.exp_name}")
+        existing = _comparable_config(_config_from_json(target))
+        if existing == signature and (not require_checkpoint or checkpoint.exists()):
+            console.print(f"[yellow]skip existing[/yellow] {exp_name}")
             return target
-        if not signature_ok:
-            console.print(
-                f"[yellow]config mismatch, re-running[/yellow] {config.exp_name}"
-            )
+        if existing != signature:
+            console.print(f"[yellow]config mismatch, re-running[/yellow] {exp_name}")
         else:
-            console.print(
-                f"[yellow]checkpoint missing, re-running[/yellow] {config.exp_name}"
-            )
-    console.print(f"[bold green]running[/bold green] {config.exp_name}")
+            console.print(f"[yellow]checkpoint missing, re-running[/yellow] {exp_name}")
+
+    console.print(f"[bold green]running[/bold green] {exp_name}")
     run_experiment(config, show_progress=show_progress)
+    _SESSION_FRESH[exp_name] = signature
     return target
 
 
@@ -269,8 +254,9 @@ def _load_checkpoint_model(
     device: str,
     metrics_dir: Path,
     checkpoints_dir: Path,
-) -> tuple[SequentialRecommender, ExperimentConfig, DataBundle]:
+) -> tuple[SequentialRecommender, ExperimentConfig, DataBundle, torch.device]:
     """Rebuild a trained model and its LOO data bundle from the metrics JSON + checkpoint."""
+    resolved = resolve_device(device)
     metrics_path = metrics_dir / f"{exp_name}.json"
     checkpoint_path = checkpoints_dir / f"{exp_name}.pt"
     if not metrics_path.exists():
@@ -290,10 +276,10 @@ def _load_checkpoint_model(
         max_seq_len=bundle.max_seq_len,
         item_pop_counts=bundle.item_pop_counts,
     )
-    state = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    state = torch.load(checkpoint_path, map_location=resolved, weights_only=True)
     model.load_state_dict(state["model"])
-    model.to(device)
-    return model, config, bundle
+    model.to(resolved)
+    return model, config, bundle, resolved
 
 
 def evaluate_oracle(
@@ -309,7 +295,7 @@ def evaluate_oracle(
     (``[..., <MASK>, future_id]``), quantifying the upper bound a bidirectional model could
     reach if it truly saw future context at test time.
     """
-    model, config, bundle = _load_checkpoint_model(
+    model, config, bundle, resolved = _load_checkpoint_model(
         exp_name,
         device=device,
         metrics_dir=metrics_dir,
@@ -320,7 +306,7 @@ def evaluate_oracle(
         oracle_cfg,
         num_items=bundle.num_items,
         item_pop_counts=bundle.item_pop_counts,
-        device=torch.device(device),
+        device=resolved,
     )
     return evaluator.evaluate(
         model, bundle.val_loader, "val_oracle", show_progress=False
@@ -378,7 +364,7 @@ def evaluate_matched_control(
     the oracle isolates the pure "one future item" gain; comparing it to the standard
     protocol quantifies the truncation / mask-position confound.
     """
-    model, config, bundle = _load_checkpoint_model(
+    model, config, bundle, resolved = _load_checkpoint_model(
         exp_name,
         device=device,
         metrics_dir=metrics_dir,
@@ -388,7 +374,7 @@ def evaluate_matched_control(
         config.eval,
         num_items=bundle.num_items,
         item_pop_counts=bundle.item_pop_counts,
-        device=torch.device(device),
+        device=resolved,
     )
     control_loader = cast(
         Any, _matched_control_batches(bundle.val_loader, bundle.max_seq_len)
@@ -635,22 +621,41 @@ def _ratio(numerator: float, denominator: float) -> float | None:
     return numerator / denominator
 
 
+def _canonical_exp_name(row: dict[str, Any]) -> str:
+    """Canonical experiment name ``{model}_{dataset}_{split}_n{window}`` for a row."""
+    return f"{row['model']}_{row['dataset']}_{row['split']}_n{row['window']}"
+
+
 def _group_rank_reversals(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Count pairwise ranking inversions between Full and Sampled rankings per group.
 
-    Ablation variants (``*_lmr*`` BERT4Rec masking runs) are excluded from the per-model
-    ranking groups: they share the ``bert4rec`` model name / window with the canonical run
-    and would otherwise appear as duplicate entries of the same architecture.
+    Only **canonical** experiments (whose ``exp_name`` exactly matches
+    ``{model}_{dataset}_{split}_n{window}``) participate in a group, so ablation variants
+    (``*_lmr*``) and multi-seed / custom-tag duplicates are excluded. Within each group the
+    model name must be unique; if duplicates still appear (e.g. two seeds), the best
+    full-ranking run is kept with a warning.
     """
     groups: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
     for row in rows:
-        if "_lmr" in row["exp_name"]:
+        if row["window"] is None or row["exp_name"] != _canonical_exp_name(row):
             continue
         key = (row["dataset"], row["split"], int(row["window"]))
         groups.setdefault(key, []).append(row)
 
     output: list[dict[str, Any]] = []
     for (dataset, split, window), group in sorted(groups.items()):
+        deduped: dict[str, dict[str, Any]] = {}
+        for row in group:
+            model = row["model"]
+            if model not in deduped or row["full_HR@10"] > deduped[model]["full_HR@10"]:
+                deduped[model] = row
+        if len(deduped) != len(group):
+            console.print(
+                f"[yellow]duplicate model rows in group {dataset}/{split}/n{window}; "
+                "keeping the best full-ranking run[/yellow]"
+            )
+        group = list(deduped.values())
+
         full_order = [
             r["model"]
             for r in sorted(group, key=lambda r: r["full_HR@10"], reverse=True)
