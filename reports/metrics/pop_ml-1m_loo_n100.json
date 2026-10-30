@@ -26,7 +26,7 @@
       "share_item_embeddings": true
     },
     "train": {
-      "epochs": 100,
+      "epochs": 200,
       "lr": 0.001,
       "weight_decay": 0.0001,
       "grad_clip": 5.0,
@@ -48,7 +48,7 @@
       "oracle_middle_mask": false
     },
     "exp_name": "pop_ml-1m_loo_n100",
-    "metrics_dir": "reports\\metrics",
+    "metrics_dir": "reports\\metrics_rerun",
     "checkpoints_dir": "data\\processed\\checkpoints"
   },
   "dataset": {
@@ -75,12 +75,12 @@
     "cpu_count": 16,
     "torch_threads": 8,
     "seqrec_version": "0.1.0",
-    "git_commit": "a860e75ef6a630799e87946bd142294a478e0a16",
-    "git_dirty": true,
+    "git_commit": "d7b36eb864f3769f1cb4cf161ba4ca91325fa146",
+    "git_dirty": false,
     "gpu": "NVIDIA GeForce RTX 3050 Ti Laptop GPU",
     "gpu_capability": "8.6"
   },
-  "reproduce": "uv run seqrec train --name pop --dataset ml-1m --split-strategy loo --max-seq-len 100 --hidden-size 64 --num-layers 2 --num-heads 2 --dropout 0.2 --loss-type ce --ggnn-steps 1 --share-item-embeddings --batch-size 256 --eval-batch-size 256 --epochs 100 --lr 0.001 --weight-decay 0.0001 --grad-clip 5.0 --patience 10 --val-every 1 --use-amp --seed 42 --device cuda --exp-name pop_ml-1m_loo_n100",
+  "reproduce": "uv run seqrec train --name pop --dataset ml-1m --split-strategy loo --max-seq-len 100 --hidden-size 64 --num-layers 2 --num-heads 2 --dropout 0.2 --loss-type ce --ggnn-steps 1 --share-item-embeddings --batch-size 256 --eval-batch-size 256 --epochs 200 --lr 0.001 --weight-decay 0.0001 --grad-clip 5.0 --patience 10 --val-every 1 --use-amp --seed 42 --device cuda --exp-name pop_ml-1m_loo_n100",
   "num_parameters": 0,
   "best_epoch": null,
   "best_val_metrics": {
@@ -129,12 +129,12 @@
     "sampled_popularity/NDCG@10": 0.0597652718424203,
     "len:16-50/HR@10": 0.04953728905824714,
     "len:>50/HR@10": 0.037116345467523196,
-    "len:16-50/NDCG@10": 0.02435554122454321,
+    "len:16-50/NDCG@10": 0.024355541224543212,
     "len:>50/NDCG@10": 0.01809247556262131,
     "pop:Head/HR@10": 0.0728613569321534,
     "pop:Mid/HR@10": 0.0,
     "pop:Tail/HR@10": 0.0,
-    "pop:Head/NDCG@10": 0.03562944071362338,
+    "pop:Head/NDCG@10": 0.03562944071362339,
     "pop:Mid/NDCG@10": 0.0,
     "pop:Tail/NDCG@10": 0.0,
     "len:16-50/count": 1837.0,
@@ -147,8 +147,8 @@
   },
   "history": [],
   "timing": {
-    "train_seconds": 0.8278112999996665,
-    "eval_seconds": 0.8120830999996542,
-    "total_seconds": 1.6398943999993207
+    "train_seconds": 0.8537064000011014,
+    "eval_seconds": 0.8316233000005013,
+    "total_seconds": 1.6853297000016028
   }
 }
