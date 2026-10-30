@@ -13,6 +13,7 @@ import importlib.metadata
 import os
 import platform
 import random
+import shlex
 import subprocess
 import time
 import warnings
@@ -130,12 +131,15 @@ def _cli_flag(field_name: str) -> str:
 
 
 def _cli_value(value: Any) -> str:
-    """Render a field value the way it must appear after its flag."""
+    """Quote values for PowerShell on Windows, or a POSIX shell elsewhere."""
     if isinstance(value, Path):
-        # POSIX separators keep the command copy-pasteable across shells and platforms.
-        return value.as_posix()
+        value = value.as_posix()
     if isinstance(value, tuple):
         return " ".join(_cli_value(item) for item in value)
+    if isinstance(value, str):
+        if os.name == "nt":
+            return "'" + value.replace("'", "''") + "'"
+        return shlex.quote(value)
     return str(value)
 
 
@@ -146,6 +150,7 @@ def reproduce_command(config: ExperimentConfig, exp_name: str) -> str:
     model, optimisation and evaluation settings, plus all paths), so re-running the command
     cannot silently fall back to defaults. Booleans become ``--flag`` / ``--no-flag``,
     tuples are space separated, and ``None`` values are omitted (their Tyro default).
+    String arguments are quoted for PowerShell on Windows and a POSIX shell elsewhere.
     """
     parts = ["uv run seqrec train"]
     for struct in (config.data, config.model, config.train, config.eval):
@@ -413,6 +418,7 @@ class Trainer:
             history[-1].val_primary = final_metrics.get(primary_key, float("nan"))
             best_epoch = final_epoch
             best_val_metrics = final_metrics
+            self._save_checkpoint(final_epoch, final_metrics)
         return history, best_epoch, best_val_metrics
 
     def _train_epoch(
