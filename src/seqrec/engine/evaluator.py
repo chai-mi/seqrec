@@ -11,11 +11,18 @@ The evaluator consumes the model agnostic :class:`~seqrec.data.dataset.EvalBatch
   (``<=5``, ``6-15``, ``16-50``, ``>50``) and by target-popularity bucket
   (``Head`` / ``Mid`` / ``Tail``).
 
-Implementation note: all ranking metrics are computed with exact rank arithmetic on the full
-logit matrix (``rank = #{items scored strictly higher than the target}``). The
-``torchmetrics.functional.retrieval_*`` helpers are *not* used because they only accept 1-D
-per-query inputs and additionally filter candidates with a ``preds > 0`` relevance rule,
-which is unsound for raw (signed) logits produced by these models.
+Ranking rule
+------------
+Every ranking number (full-ranking rank, sampled-ranking rank, and the Top-K list used for
+``ARP`` / ``Coverage``) is derived from **one single total order**: descending score with
+ascending item id as the tie-breaker. It is materialised with
+``torch.argsort(scores, descending=True, stable=True)``, so tied items are ranked by id and
+the accuracy metrics can never disagree with the recommendation list. A target is therefore
+"hit at K" exactly when it appears in the first ``K`` entries of that order.
+
+Implementation note: the ``torchmetrics.functional.retrieval_*`` helpers are *not* used
+because they only accept 1-D per-query inputs and additionally filter candidates with a
+``preds > 0`` relevance rule, which is unsound for raw (signed) logits.
 """
 
 from __future__ import annotations
@@ -69,7 +76,7 @@ class Evaluator:
         self.ks = tuple(sorted({*config.ks, config.primary_k}))
         self.max_k = max(self.ks)
         self.item_pop_counts = item_pop_counts.float().to(device)
-        self._pop_probs = self._build_pop_sampling_probs(self.item_pop_counts)
+        self._pop_weights = self._build_pop_sampling_weights(self.item_pop_counts)
 
     # ------------------------------------------------------------------ evaluation
 
@@ -197,11 +204,22 @@ class Evaluator:
         model: SequentialRecommender,
         batch: EvalBatch,
     ) -> EvalBatch:
-        """Build the BERT4Rec "oracle" middle-mask input used for the train-test mismatch study.
+        """Build the BERT4Rec "oracle" input used for the train-test mismatch study.
 
-        The last history item is replaced by ``<MASK>`` and the *future* (next) item is appended
-        right after it, so the bidirectional encoder can exploit right-hand context exactly as it
-        did during Cloze training.
+        With ``history=[1, 2, 3]``, ``target_id=4`` and ``future_id=5`` the batch is rewritten
+        to ``input_ids=[1, 2, 3, <MASK>, 5]``: the ``<MASK>`` sits exactly at the *target*
+        position (the item to be predicted) and the known next interaction is kept as
+        right-hand context. The position the model must score is published through the
+        optional ``score_pos`` batch entry (see :meth:`SequentialRecommender.score_position`),
+        and the oldest history tokens are dropped when the window would overflow.
+
+        The protocol is only meaningful on a split that has a known future item (the LOO
+        validation split); samples with ``future_id == 0`` are rejected explicitly instead of
+        silently scoring a masked position without right-hand context.
+
+        Raises:
+            ValueError: If the model exposes no ``mask_token_id``, or if any sample has
+                ``future_id == 0``.
         """
         mask_token_id = getattr(model, "mask_token_id", None)
         if mask_token_id is None:
@@ -209,26 +227,43 @@ class Evaluator:
                 "EvalConfig.oracle_middle_mask requires a model exposing `mask_token_id` "
                 "(e.g. BERT4Rec)."
             )
-        input_ids = batch["input_ids"].clone()
-        seq_len = batch["seq_len"].clone()
+        missing_future = batch["future_id"] <= 0
+        if bool(missing_future.any()):
+            raise ValueError(
+                f"{int(missing_future.sum().item())} sample(s) in this split have future_id=0, "
+                "so the oracle middle-mask protocol has no right-hand context. Use the LOO "
+                "validation split (which carries future_id) for oracle evaluation."
+            )
+
+        input_ids = batch["input_ids"]
+        seq_len = batch["seq_len"]
         batch_size, window = input_ids.shape
+        if window < 3:
+            raise ValueError(f"oracle_middle_mask needs max_seq_len >= 3, got {window}")
+
+        # Reserve two slots (MASK + future); drop the oldest history tokens if necessary.
+        shift = (seq_len + 2 - window).clamp(min=0)
+        kept = seq_len - shift
+        columns = (
+            torch.arange(window, device=input_ids.device)
+            .unsqueeze(0)
+            .expand(batch_size, -1)
+        )
+        source = (columns + shift.unsqueeze(1)).clamp(max=window - 1)
+        gathered = input_ids.gather(1, source)
+        keep_mask = columns < kept.unsqueeze(1)
+        new_ids = torch.where(keep_mask, gathered, torch.zeros_like(gathered))
+
         rows = torch.arange(batch_size, device=input_ids.device)
-
-        overflow = seq_len >= window
-        if bool(overflow.any()):
-            shifted = torch.zeros_like(input_ids)
-            shifted[:, :-1] = input_ids[:, 1:]
-            input_ids = torch.where(overflow.unsqueeze(1), shifted, input_ids)
-            seq_len = torch.where(overflow, seq_len - 1, seq_len)
-
-        mask_pos = (seq_len - 1).clamp(min=0)
-        future_pos = (mask_pos + 1).clamp(max=window - 1)
-        input_ids[rows, mask_pos] = mask_token_id
-        input_ids[rows, future_pos] = batch["future_id"]
+        mask_pos = kept
+        future_pos = kept + 1
+        new_ids[rows, mask_pos] = mask_token_id
+        new_ids[rows, future_pos] = batch["future_id"]
 
         masked_batch = dict(batch)
-        masked_batch["input_ids"] = input_ids
-        masked_batch["seq_len"] = (seq_len + 1).clamp(max=window)
+        masked_batch["input_ids"] = new_ids
+        masked_batch["seq_len"] = future_pos + 1
+        masked_batch["score_pos"] = mask_pos
         return cast(EvalBatch, masked_batch)
 
     # ------------------------------------------------------------------ metrics
@@ -237,6 +272,10 @@ class Evaluator:
     def _bias_k(self) -> int:
         """Rank cutoff used for the popularity-bias metrics (``ARP@10`` / ``Coverage@10``)."""
         return min(10, self.num_items)
+
+    def _total_order(self, scores: torch.Tensor) -> torch.Tensor:
+        """Return item indices sorted by descending score, ties broken by ascending id."""
+        return torch.argsort(scores, dim=1, descending=True, stable=True)
 
     def _batch_metrics(
         self,
@@ -253,9 +292,10 @@ class Evaluator:
             Tuple ``(metrics, top_ids)`` where ``metrics`` maps a metric name to a
             ``[B]`` tensor of per-query values and ``top_ids`` holds the top-``10`` item IDs.
         """
+        order = self._total_order(scores)
         target = batch["target_id"].unsqueeze(1)
-        target_scores = scores.gather(1, target)
-        rank = (scores > target_scores).sum(dim=1)  # 0-based rank of the target
+        # 0-based rank of the target inside the single total order shared with `top_ids`.
+        rank = (order == target).int().argmax(dim=1)
         rank_f = rank.double()
 
         metrics: dict[str, torch.Tensor] = {}
@@ -267,7 +307,7 @@ class Evaluator:
             )
         metrics["MRR"] = 1.0 / (rank_f + 1.0)
 
-        top_ids = scores[:, 1:].topk(self._bias_k, dim=1).indices + 1
+        top_ids = order[:, : self._bias_k]
         metrics[f"ARP@{self._bias_k}"] = (
             self.item_pop_counts[top_ids].mean(dim=1).double()
         )
@@ -286,15 +326,19 @@ class Evaluator:
         batch: EvalBatch,
         strategy: str,
     ) -> dict[str, torch.Tensor]:
-        """``HR@k`` / ``NDCG@k`` over ``1`` positive + ``num_neg_samples`` sampled negatives."""
+        """``HR@k`` / ``NDCG@k`` over ``1`` positive + ``num_neg_samples`` sampled negatives.
+
+        The positive candidate is placed at column ``0`` and ranked with the same total order
+        rule as the full-ranking metrics (score descending, then candidate index ascending).
+        """
         k = self.config.primary_k
-        num_neg = self.config.num_neg_samples
-        negatives = self._sample_negatives(batch, num_neg, strategy)  # [B, num_neg]
-        pos_scores = scores.gather(1, batch["target_id"].unsqueeze(1))
-        neg_scores = scores.gather(1, negatives)
-        rank = (
-            (neg_scores > pos_scores).sum(dim=1).double()
-        )  # rank within the candidate set
+        negatives = self._sample_negatives(batch, self.config.num_neg_samples, strategy)
+        positives = batch["target_id"].unsqueeze(1)
+        candidates = torch.cat(
+            [scores.gather(1, positives), scores.gather(1, negatives)], dim=1
+        )
+        order = self._total_order(candidates)
+        rank = (order == 0).int().argmax(dim=1).double()
         hit = rank < k
         return {
             f"HR@{k}": hit.double(),
@@ -308,36 +352,39 @@ class Evaluator:
         batch: EvalBatch,
         num_neg: int,
         strategy: str,
-        max_retries: int = 5,
     ) -> torch.Tensor:
-        """Sample negatives that avoid the user's history and the positive target."""
+        """Sample negatives from the *valid* candidate distribution.
+
+        Candidates are restricted to items that are neither in the user's history nor the
+        positive target, so every returned negative is legal by construction (no rejection
+        loop that can silently give up for long-history users). When fewer valid candidates
+        than ``num_neg`` remain, sampling is performed with replacement and duplicates are
+        returned; a user whose history covers the whole catalogue raises a clear error.
+        """
         batch_size = batch["input_ids"].size(0)
-        seen = batch["seen_ids"]
-        target = batch["target_id"].unsqueeze(1)
+        allowed = torch.ones(
+            (batch_size, self.num_items + 1), dtype=torch.bool, device=self.device
+        )
+        allowed[:, 0] = False  # <PAD> is never a valid candidate
+        allowed.scatter_(1, batch["seen_ids"], False)
+        allowed.scatter_(1, batch["target_id"].unsqueeze(1), False)
 
-        def draw() -> torch.Tensor:
-            if strategy == "uniform":
-                return torch.randint(
-                    1, self.num_items + 1, (batch_size, num_neg), device=self.device
-                )
-            flat = torch.multinomial(
-                self._pop_probs, batch_size * num_neg, replacement=True
+        weights = allowed.to(torch.float32)
+        if strategy == "popularity":
+            weights = weights * self._pop_weights.unsqueeze(0)
+        totals = weights.sum(dim=1, keepdim=True)
+        empty = totals.squeeze(1) <= 0
+        if bool(empty.any()):
+            raise ValueError(
+                f"{int(empty.sum().item())} sample(s) have no valid negative candidate left "
+                "(history + target cover the whole catalogue)."
             )
-            return flat.view(batch_size, num_neg) + 1
+        return torch.multinomial(weights / totals, num_neg, replacement=True)
 
-        negatives = draw()
-        for _ in range(max_retries):
-            invalid = (negatives == target) | (
-                negatives.unsqueeze(2) == seen.unsqueeze(1)
-            ).any(dim=2)
-            if not bool(invalid.any()):
-                break
-            negatives = torch.where(invalid, draw(), negatives)
-        return negatives
-
-    def _build_pop_sampling_probs(self, item_pop_counts: torch.Tensor) -> torch.Tensor:
-        """Popularity-proportional sampling distribution over real item IDs."""
-        probs = item_pop_counts[1:].clamp(min=0).double()
-        if float(probs.sum().item()) <= 0.0:
-            probs = torch.ones_like(probs)
-        return probs / probs.sum()
+    def _build_pop_sampling_weights(
+        self, item_pop_counts: torch.Tensor
+    ) -> torch.Tensor:
+        """Popularity-proportional sampling weights over item IDs ``0..V`` (``<PAD>`` = 0)."""
+        weights = item_pop_counts.clamp(min=0).float()
+        weights[0] = 0.0
+        return weights

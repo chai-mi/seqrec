@@ -22,10 +22,11 @@ from seqrec.models.base import (
     SequentialRecommender,
     full_bce_loss,
     full_softmax_ce_loss,
-    gather_last_valid,
+    gather_positions,
     init_item_embedding,
     prepend_pad_column,
     sampled_bpr_max_loss,
+    score_position,
     select_supervised_positions,
 )
 
@@ -118,10 +119,10 @@ class GRU4Rec(SequentialRecommender):
         return sampled_bpr_max_loss(projected, embeddings, flat_targets)
 
     def score_items(self, batch: EvalBatch) -> torch.Tensor:
-        """Score all items from the hidden state at the last valid sequence position."""
+        """Score all items from the hidden state at the scoring position (default: last)."""
         hidden = self.encode(batch["input_ids"])
-        last_hidden = self.project(gather_last_valid(hidden, batch["seq_len"]))
-        return prepend_pad_column(self._item_logits(last_hidden))
+        scored_hidden = self.project(gather_positions(hidden, score_position(batch)))
+        return prepend_pad_column(self._item_logits(scored_hidden))
 
     def extra_repr(self) -> str:
         return (

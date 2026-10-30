@@ -22,9 +22,10 @@ from seqrec.models.base import (
     SequentialRecommender,
     full_bce_loss,
     full_softmax_ce_loss,
-    gather_last_valid,
+    gather_positions,
     init_item_embedding,
     prepend_pad_column,
+    score_position,
     select_supervised_positions,
 )
 
@@ -185,9 +186,19 @@ class SASRec(SequentialRecommender):
             hidden = block(hidden)
         return self.final_norm(hidden)
 
+    def project(self, hidden: torch.Tensor) -> torch.Tensor:
+        """Output projection shared by the training and the inference scoring path.
+
+        With ``share_item_embeddings=True`` this is the identity (the item embedding matrix is
+        tied); otherwise it is a trained linear map. Both :meth:`compute_loss` and
+        :meth:`score_items` must go through it so that evaluation never uses an untrained
+        projection.
+        """
+        return self.output(hidden)
+
     def _item_logits(self, hidden: torch.Tensor) -> torch.Tensor:
-        """Dot product between (projected) hidden states and the item embedding matrix."""
-        return self.output(hidden) @ self.item_embedding.weight[1:].T
+        """Dot product between projected hidden states and the item embedding matrix."""
+        return hidden @ self.item_embedding.weight[1:].T
 
     def compute_loss(self, batch: CausalTrainBatch) -> torch.Tensor:
         """Next-item loss over all supervised positions of the batch."""
@@ -195,16 +206,17 @@ class SASRec(SequentialRecommender):
         flat_hidden, flat_targets = select_supervised_positions(
             hidden, batch["target_ids"]
         )
+        projected = self.project(flat_hidden)
         embeddings = self.item_embedding.weight
         if self.loss_type == "ce":
-            return full_softmax_ce_loss(flat_hidden, embeddings, flat_targets)
-        return full_bce_loss(flat_hidden, embeddings, flat_targets)
+            return full_softmax_ce_loss(projected, embeddings, flat_targets)
+        return full_bce_loss(projected, embeddings, flat_targets)
 
     def score_items(self, batch: EvalBatch) -> torch.Tensor:
-        """Score all items from the causal representation of the last valid position."""
+        """Score all items from the representation at the scoring position (default: last)."""
         hidden = self.encode(batch["input_ids"])
-        last_hidden = gather_last_valid(hidden, batch["seq_len"])
-        return prepend_pad_column(self._item_logits(last_hidden))
+        scored_hidden = self.project(gather_positions(hidden, score_position(batch)))
+        return prepend_pad_column(self._item_logits(scored_hidden))
 
     def extra_repr(self) -> str:
         return (

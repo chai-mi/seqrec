@@ -11,7 +11,7 @@ from rich.table import Table
 from seqrec.config import DataConfig, ExperimentConfig, ModelName, PreprocessConfig
 from seqrec.data.dataset import build_databundle
 from seqrec.data.preprocess import print_metadata_summary, run_preprocess
-from seqrec.engine.trainer import ExperimentResult, default_exp_name, run_experiment
+from seqrec.engine.trainer import ExperimentResult, run_experiment
 
 console = Console()
 
@@ -137,6 +137,24 @@ def run_train(cmd: TrainCmd) -> ExperimentResult:
     return result
 
 
+def sweep_exp_name(
+    base: ExperimentConfig,
+    seq_len: int,
+    seed: int,
+    multi_seed: bool,
+) -> str:
+    """Unique experiment name for one sweep cell: ``<base>_n{N}[_s{seed}]``.
+
+    A user supplied ``--exp-name`` is treated as a *prefix* so that every window (and every
+    seed) gets its own metrics JSON and checkpoint instead of overwriting/skipping each other.
+    """
+    prefix = base.exp_name or (
+        f"{base.model.name}_{base.data.dataset}_{base.data.split_strategy}"
+    )
+    name = f"{prefix}_n{seq_len}"
+    return f"{name}_s{seed}" if multi_seed else name
+
+
 def run_sweep(cmd: SweepCmd) -> list[ExperimentResult]:
     """Run the ``N`` (truncation window) / seed sensitivity grid sequentially."""
     results: list[ExperimentResult] = []
@@ -145,8 +163,9 @@ def run_sweep(cmd: SweepCmd) -> list[ExperimentResult]:
             exp = copy.deepcopy(cmd.exp)
             exp.data.max_seq_len = seq_len
             exp.train.seed = seed
-            base_name = default_exp_name(exp)
-            exp.exp_name = base_name if len(cmd.seeds) == 1 else f"{base_name}_s{seed}"
+            exp.exp_name = sweep_exp_name(
+                cmd.exp, seq_len, seed, multi_seed=len(cmd.seeds) > 1
+            )
             target = exp.metrics_dir / f"{exp.exp_name}.json"
             if cmd.resume and target.exists():
                 console.print(f"[yellow]skip existing[/yellow] {exp.exp_name}")

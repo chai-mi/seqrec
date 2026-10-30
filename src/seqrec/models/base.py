@@ -30,9 +30,11 @@ __all__ = [
     "full_bce_loss",
     "full_softmax_ce_loss",
     "gather_last_valid",
+    "gather_positions",
     "init_item_embedding",
     "prepend_pad_column",
     "sampled_bpr_max_loss",
+    "score_position",
     "select_supervised_positions",
 ]
 
@@ -47,6 +49,11 @@ class SequentialRecommender(nn.Module, ABC):
     - :meth:`score_items` consumes the unified :class:`~seqrec.data.dataset.EvalBatch` and
       returns raw logits of shape ``[batch_size, num_items + 1]`` where column ``0``
       (``<PAD>``) must be ``-inf``.
+
+    Scoring position contract: models must read the hidden state at
+    :func:`score_position`, i.e. ``batch["score_pos"]`` when the evaluator provides it
+    (Cloze / oracle middle-mask protocol, where the item to predict sits at a mask position
+    inside the sequence) and the last valid position ``seq_len - 1`` otherwise.
 
     Attributes:
         paradigm: Name of the training paradigm the model consumes.
@@ -92,6 +99,20 @@ class SequentialRecommender(nn.Module, ABC):
         return f"num_items={self.num_items}"
 
 
+def gather_positions(hidden: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
+    """Gather one hidden state per sequence at the given positions.
+
+    Args:
+        hidden: Sequence representations of shape ``[B, N, H]``.
+        positions: 0-based positions of shape ``[B]``.
+
+    Returns:
+        Tensor of shape ``[B, H]``.
+    """
+    index = positions.clamp(min=0).view(-1, 1, 1).expand(-1, 1, hidden.size(-1))
+    return hidden.gather(1, index).squeeze(1)
+
+
 def gather_last_valid(hidden: torch.Tensor, seq_len: torch.Tensor) -> torch.Tensor:
     """Gather the hidden state at the last valid (non-padding) position of each sequence.
 
@@ -102,8 +123,20 @@ def gather_last_valid(hidden: torch.Tensor, seq_len: torch.Tensor) -> torch.Tens
     Returns:
         Tensor of shape ``[B, H]``.
     """
-    index = (seq_len.clamp(min=1) - 1).view(-1, 1, 1).expand(-1, 1, hidden.size(-1))
-    return hidden.gather(1, index).squeeze(1)
+    return gather_positions(hidden, seq_len.clamp(min=1) - 1)
+
+
+def score_position(batch: EvalBatch) -> torch.Tensor:
+    """Position whose hidden state is used to score items.
+
+    The evaluator publishes ``batch["score_pos"]`` when the item to predict is not the last
+    token of the input (e.g. the oracle middle-mask protocol, ``[..., <MASK>, future]``).
+    Every other protocol defaults to the last valid position ``seq_len - 1``.
+    """
+    positions = batch.get("score_pos")  # type: ignore[call-overload]
+    if positions is None:
+        return (batch["seq_len"] - 1).clamp(min=0)
+    return positions
 
 
 def prepend_pad_column(logits: torch.Tensor) -> torch.Tensor:
