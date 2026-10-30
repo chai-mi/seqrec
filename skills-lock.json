@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "skills": {
+    "marimo-pair": {
+      "source": "marimo-team/marimo-pair",
+      "sourceType": "github",
+      "skillPath": "skills/marimo-pair/SKILL.md",
+      "computedHash": "56b1540731d05d5d85e8e59fbad67205b8a59e89bb6eb0da65341fcd558cdb1d"
+    },
+    "polars": {
+      "source": "polars-inc/skills",
+      "sourceType": "github",
+      "skillPath": "skills/polars/SKILL.md",
+      "computedHash": "e586bbda85858f74c9976994453568defdb4151503379f5d8b64db9a96fe5661"
+    },
+    "touying-author": {
+      "source": "apcamargo/typst-skills",
+      "sourceType": "github",
+      "skillPath": "touying-author/SKILL.md",
+      "computedHash": "e4cbc2d403562bfe2ec08772d1d60185d6e4eacf7e25ffa70e20b613bcfa77bc"
+    },
+    "typst-author": {
+      "source": "apcamargo/typst-skills",
+      "sourceType": "github",
+      "skillPath": "typst-author/SKILL.md",
+      "computedHash": "be289c03214fdc6924fc86639374973ea6ddaa8dcdab6009bba3aaee5ee89dd0"
+    }
+  }
+}
