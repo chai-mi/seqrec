@@ -2,23 +2,24 @@
 
 ## 📌 当前进度 (Current Progress)
 
-- **当前所处阶段**：`Phase 1 — 工程初始化完成，待开发数据预处理与加载底座`
-- **整体完成度**：`15%`（已完成项目规划、`uv` 工程与依赖初始化、完整目录结构搭建及 Typst 报告模板准备）
+- **当前所处阶段**：`Phase 1 已完成 — 待启动 Phase 2（统一训练评测框架与四大模型实现）`
+- **整体完成度**：`30%`（已完成工程初始化、强类型配置 `config.py`、统一 CLI `cli.py`、双数据集 5-core 预处理与 LOO/Temporal 切分 `preprocess.py`、三范式 PyTorch Dataset `dataset.py` 及 Marimo 交互式数据探索笔记本）
 - **最近完成事项**：
-  - 完成 `AGENTS.md` 与 `PLAN.md` 规划文档；
-  - 调研并锁定 Hugging Face Hub 上的现成 Parquet 数据源（`datasets` 加载 + `polars` 转换）；
-  - 完成 `uv init --package --name seqrec` 环境初始化，安装全部核心依赖（`torch` cu130, `torchmetrics`, `datasets`, `polars`, `orjson`, `altair`, `vl-convert-python`, `tyro`, `rich`, `tqdm`）与开发依赖（`marimo`, `ruff`, `ty`）；
-  - 建全 `src/seqrec/{data,models,engine,analysis}`、`data/processed`、`reports/{metrics,figures}` 目录结构与 `.gitignore`。
+  - 在 `AGENTS.md` 中补充 Marimo 笔记本规范（`with app.setup:` 统一管理全部包导入，类与函数各自独占单元格 `@app.function` / `@app.class_definition`）；
+  - 完成 `src/seqrec/config.py` 与 `src/seqrec/cli.py`（支持 `uv run seqrec preprocess`、`uv run seqrec inspect-data`、`uv run seqrec train`）；
+  - 完成 `src/seqrec/data/preprocess.py`：拉取并处理 `Amazon-Beauty`（22,363 用户、12,101 物品、198,502 交互）与 `MovieLens-1M`（6,040 用户、3,416 物品、999,611 交互），生成 LOO 与 Global Temporal 切分 Parquet 及 `metadata.json`；
+  - 完成 `src/seqrec/data/dataset.py`：实现 `CausalSeqDataset`、`ClozeSeqDataset`、`SessionGraphDataset`（含纯 PyTorch 向量化会话图构建）与统一评测 `EvalSeqDataset`；
+  - 完成 `notebooks/phase1_data_explore.py` 交互式数据探索与验证笔记本，并通过 `ruff`、`ty`、`marimo check` 全部检查。
 - **下一步行动 (Next Actions)**：
-  1. 编写 `src/seqrec/config.py` 与 `src/seqrec/cli.py` 定义强类型配置与命令行入口；
-  2. 编写 `src/seqrec/data/preprocess.py` 与 `src/seqrec/data/dataset.py` 完成数据集预处理与 PyTorch Dataset 构造。
+  1. 实现 `src/seqrec/models/base.py` 与五类模型（`Pop`, `GRU4Rec`, `SASRec`, `BERT4Rec`, `SR-GNN`）；
+  2. 实现 `src/seqrec/engine/evaluator.py` 与 `src/seqrec/engine/trainer.py`，跑通前向/反向传播与评测闭环。
 
 ### 里程碑状态总览
 
 | 阶段 | 里程碑名称 | 状态 | 核心产出 |
 | :--- | :--- | :---: | :--- |
 | **Phase 0** | 项目立项与架构规划 | ✅ 已完成 | `AGENTS.md`, `PLAN.md` |
-| **Phase 1** | 工程初始化与数据底座搭建 | 🔄 进行中 | 已完成 `pyproject.toml` 与目录初始化；待实现 `preprocess.py` 与 `dataset.py` |
+| **Phase 1** | 工程初始化与数据底座搭建 | ✅ 已完成 | `config.py`, `cli.py`, `preprocess.py`, `dataset.py`, `phase1_data_explore.py` |
 | **Phase 2** | 统一训练评测框架与四大模型实现 | ⏳ 待开始 | `Trainer`, `Evaluator`, `Pop`, `GRU4Rec`, `SASRec`, `BERT4Rec`, `SR-GNN` |
 | **Phase 3** | 两大数据集主实验与基准对齐 | ⏳ 待开始 | MovieLens-1M 与 Amazon-Beauty 全库/采样评测基准结果 (`orjson`) |
 | **Phase 4** | 三大专题深度实验与三维对照表产出 | ⏳ 待开始 | 序列长度三维对照表、长尾/流行度偏差分析、信息泄露验证、矢量图表与 Typst 报告 |
@@ -138,9 +139,9 @@
 
 ### Phase 1：工程初始化与数据底座搭建
 - [x] 使用 `uv init --package --name seqrec` 初始化项目与 `pyproject.toml`，配置 `torch`, `torchmetrics`, `datasets`, `polars`, `orjson`, `altair`, `vl-convert-python`, `tyro`, `rich`, `tqdm`, `marimo`, `ruff`, `ty` 并建立完整子目录
-- [ ] 编写 `src/seqrec/config.py` 与 `src/seqrec/cli.py`：定义强类型实验配置 `dataclass` 与统一 CLI 入口（`uv run seqrec ...`）
-- [ ] 编写 `src/seqrec/data/preprocess.py`：使用 `datasets.load_dataset` 拉取 HF 现成数据集 (`wwbrannon/ml-interview-examples-movielens-1m` 与 `ttb06/amazon_beauty_5_2014`)，转 `polars` 完成 5-core 校验、连续 ID 映射、LOO 划分与全局时间切分，导出标准化 Parquet 与统计摘要
-- [ ] 编写 `src/seqrec/data/dataset.py`：实现支持 Causal 序列、Cloze 掩码序列、以及 SR-GNN 会话图结构的 Dataset 与 DataLoader（全程严格添加 Type Hints）
+- [x] 编写 `src/seqrec/config.py` 与 `src/seqrec/cli.py`：定义强类型实验配置 `dataclass` 与统一 CLI 入口（`uv run seqrec ...`）
+- [x] 编写 `src/seqrec/data/preprocess.py`：使用 `datasets.load_dataset` 拉取 HF 现成数据集 (`wwbrannon/ml-interview-examples-movielens-1m` 与 `ttb06/amazon_beauty_5_2014`)，转 `polars` 完成 5-core 校验、连续 ID 映射、LOO 划分与全局时间切分，导出标准化 Parquet 与统计摘要
+- [x] 编写 `src/seqrec/data/dataset.py`：实现支持 Causal 序列、Cloze 掩码序列、以及 SR-GNN 会话图结构的 Dataset 与 DataLoader（全程严格添加 Type Hints）
 
 ### Phase 2：统一训练评测框架与四大模型实现
 - [ ] 实现 `src/seqrec/models/base.py` 与 `src/seqrec/models/baselines.py` (`Pop`)
