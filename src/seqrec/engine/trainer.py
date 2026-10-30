@@ -9,7 +9,11 @@ once.
 from __future__ import annotations
 
 import dataclasses
+import importlib.metadata
+import os
+import platform
 import random
+import subprocess
 import time
 import warnings
 from dataclasses import dataclass, field
@@ -33,10 +37,14 @@ __all__ = [
     "ExperimentResult",
     "Trainer",
     "default_exp_name",
+    "environment_info",
+    "reproduce_command",
     "resolve_device",
     "run_experiment",
     "seed_everything",
 ]
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def resolve_device(name: str) -> torch.device:
@@ -52,11 +60,102 @@ def resolve_device(name: str) -> torch.device:
 
 
 def seed_everything(seed: int) -> None:
-    """Seed Python and PyTorch RNGs for reproducible runs."""
+    """Seed every RNG and pin cuDNN to deterministic algorithms.
+
+    Must be called *before* the model is instantiated so that weight initialisation is
+    reproducible as well (not only the shuffling / dropout streams).
+    """
     random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def _git(*args: str) -> str | None:
+    """Run a read-only git command in the repository root, returning ``None`` on failure."""
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except OSError, subprocess.SubprocessError:
+        return None
+    return completed.stdout.strip() if completed.returncode == 0 else None
+
+
+def environment_info(device: torch.device | None = None) -> dict[str, Any]:
+    """Capture the runtime environment so runs stay comparable across machines.
+
+    The recorded fields (python / torch / CUDA build / GPU name / git commit) let another
+    machine verify it is reproducing a result with the same code and stack.
+    """
+    try:
+        package_version = importlib.metadata.version("seqrec")
+    except (
+        importlib.metadata.PackageNotFoundError
+    ):  # pragma: no cover - editable installs
+        package_version = "unknown"
+
+    info: dict[str, Any] = {
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "torch": torch.__version__,
+        "cuda_build": torch.version.cuda,
+        "cudnn": torch.backends.cudnn.version(),
+        "cuda_available": torch.cuda.is_available(),
+        "cpu_count": os.cpu_count(),
+        "torch_threads": torch.get_num_threads(),
+        "seqrec_version": package_version,
+        "git_commit": _git("rev-parse", "HEAD"),
+        # Untracked files (e.g. freshly written metric JSONs) must not mark a run as dirty.
+        "git_dirty": bool(_git("status", "--porcelain", "--untracked-files=no")),
+    }
+    if device is not None and device.type == "cuda":
+        info["gpu"] = torch.cuda.get_device_name(device)
+        info["gpu_capability"] = ".".join(
+            str(part) for part in torch.cuda.get_device_capability(device)
+        )
+    return info
+
+
+def reproduce_command(config: ExperimentConfig, exp_name: str) -> str:
+    """Build the exact single-run CLI command that reproduces an experiment."""
+    data, model, train = config.data, config.model, config.train
+    parts = [
+        "uv run seqrec train",
+        f"--name {model.name}",
+        f"--dataset {data.dataset}",
+        f"--split-strategy {data.split_strategy}",
+        f"--max-seq-len {data.resolved_max_seq_len}",
+        f"--hidden-size {model.hidden_size}",
+        f"--num-layers {model.num_layers}",
+        f"--num-heads {model.num_heads}",
+        f"--dropout {model.dropout}",
+        f"--loss-type {model.loss_type}",
+        f"--ggnn-steps {model.ggnn_steps}",
+        "--share-item-embeddings"
+        if model.share_item_embeddings
+        else "--no-share-item-embeddings",
+        f"--batch-size {data.batch_size}",
+        f"--eval-batch-size {data.eval_batch_size}",
+        f"--epochs {train.epochs}",
+        f"--lr {train.lr}",
+        f"--weight-decay {train.weight_decay}",
+        f"--grad-clip {train.grad_clip}",
+        f"--patience {train.patience}",
+        f"--val-every {train.val_every}",
+        "--use-amp" if train.use_amp else "--no-use-amp",
+        f"--seed {train.seed}",
+        f"--device {train.device}",
+        f"--exp-name {exp_name}",
+    ]
+    return " ".join(parts)
 
 
 def default_exp_name(config: ExperimentConfig) -> str:
@@ -96,6 +195,8 @@ class ExperimentResult:
     test_metrics: dict[str, float]
     train_seconds: float
     eval_seconds: float
+    environment: dict[str, Any] = field(default_factory=dict)
+    reproduce: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise the result into a JSON-ready dictionary."""
@@ -104,6 +205,8 @@ class ExperimentResult:
             "config": dataclasses.asdict(self.config),
             "dataset": self.dataset_summary,
             "device": self.device,
+            "environment": self.environment,
+            "reproduce": self.reproduce,
             "num_parameters": self.num_parameters,
             "best_epoch": self.best_epoch,
             "best_val_metrics": self.best_val_metrics,
@@ -212,6 +315,8 @@ class Trainer:
             test_metrics=test_metrics,
             train_seconds=train_seconds,
             eval_seconds=eval_seconds,
+            environment=environment_info(self.device),
+            reproduce=reproduce_command(self.config, self.exp_name),
         )
 
     # ------------------------------------------------------------------ internals
@@ -366,6 +471,8 @@ def run_experiment(
     Returns:
         The completed :class:`ExperimentResult`.
     """
+    # Seed before building the model so weight initialisation is reproducible too.
+    seed_everything(config.train.seed)
     bundle = build_databundle(config.data, model_name=config.model.name)
     model = build_model(
         config.model,
