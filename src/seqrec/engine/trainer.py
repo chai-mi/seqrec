@@ -9,12 +9,7 @@ once.
 from __future__ import annotations
 
 import dataclasses
-import importlib.metadata
-import os
-import platform
 import random
-import shlex
-import subprocess
 import time
 import warnings
 from dataclasses import dataclass, field
@@ -38,14 +33,10 @@ __all__ = [
     "ExperimentResult",
     "Trainer",
     "default_exp_name",
-    "environment_info",
-    "reproduce_command",
     "resolve_device",
     "run_experiment",
     "seed_everything",
 ]
-
-REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def resolve_device(name: str) -> torch.device:
@@ -72,107 +63,6 @@ def seed_everything(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
-
-def _git(*args: str) -> str | None:
-    """Run a read-only git command in the repository root, returning ``None`` on failure."""
-    try:
-        completed = subprocess.run(
-            ["git", *args],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except OSError, subprocess.SubprocessError:
-        return None
-    return completed.stdout.strip() if completed.returncode == 0 else None
-
-
-def environment_info(device: torch.device | None = None) -> dict[str, Any]:
-    """Capture the runtime environment so runs stay comparable across machines.
-
-    The recorded fields (python / torch / CUDA build / GPU name / git commit) let another
-    machine verify it is reproducing a result with the same code and stack.
-    """
-    try:
-        package_version = importlib.metadata.version("seqrec")
-    except (
-        importlib.metadata.PackageNotFoundError
-    ):  # pragma: no cover - editable installs
-        package_version = "unknown"
-
-    info: dict[str, Any] = {
-        "python": platform.python_version(),
-        "platform": platform.platform(),
-        "torch": torch.__version__,
-        "cuda_build": torch.version.cuda,
-        "cudnn": torch.backends.cudnn.version(),
-        "cuda_available": torch.cuda.is_available(),
-        "cpu_count": os.cpu_count(),
-        "torch_threads": torch.get_num_threads(),
-        "seqrec_version": package_version,
-        "git_commit": _git("rev-parse", "HEAD"),
-        # Untracked files (e.g. freshly written metric JSONs) must not mark a run as dirty.
-        "git_dirty": bool(_git("status", "--porcelain", "--untracked-files=no")),
-    }
-    if device is not None and device.type == "cuda":
-        info["gpu"] = torch.cuda.get_device_name(device)
-        info["gpu_capability"] = ".".join(
-            str(part) for part in torch.cuda.get_device_capability(device)
-        )
-    return info
-
-
-def _cli_flag(field_name: str) -> str:
-    """Map a dataclass field name to the Tyro flag used by ``seqrec train``."""
-    return "--" + field_name.replace("_", "-")
-
-
-def _cli_value(value: Any) -> str:
-    """Quote values for PowerShell on Windows, or a POSIX shell elsewhere."""
-    if isinstance(value, Path):
-        value = value.as_posix()
-    if isinstance(value, tuple):
-        return " ".join(_cli_value(item) for item in value)
-    if isinstance(value, str):
-        if os.name == "nt":
-            return "'" + value.replace("'", "''") + "'"
-        return shlex.quote(value)
-    return str(value)
-
-
-def reproduce_command(config: ExperimentConfig, exp_name: str) -> str:
-    """Build the exact single-run CLI command that reproduces an experiment.
-
-    Every field of :class:`~seqrec.config.ExperimentConfig` is emitted (data construction,
-    model, optimisation and evaluation settings, plus all paths), so re-running the command
-    cannot silently fall back to defaults. Booleans become ``--flag`` / ``--no-flag``,
-    tuples are space separated, and ``None`` values are omitted (their Tyro default).
-    String arguments are quoted for PowerShell on Windows and a POSIX shell elsewhere.
-    """
-    parts = ["uv run seqrec train"]
-    for struct in (config.data, config.model, config.train, config.eval):
-        for spec in dataclasses.fields(struct):
-            value = getattr(struct, spec.name)
-            flag = _cli_flag(spec.name)
-            if isinstance(value, bool):
-                parts.append(flag if value else f"--no-{spec.name.replace('_', '-')}")
-            elif value is None:
-                continue
-            else:
-                parts.append(f"{flag} {_cli_value(value)}")
-    for spec in dataclasses.fields(config):
-        if spec.name in {"data", "model", "train", "eval"}:
-            continue
-        value = getattr(config, spec.name)
-        if spec.name == "exp_name":
-            value = exp_name
-        elif value is None:
-            continue
-        parts.append(f"{_cli_flag(spec.name)} {_cli_value(value)}")
-    return " ".join(parts)
 
 
 def default_exp_name(config: ExperimentConfig) -> str:
@@ -212,8 +102,6 @@ class ExperimentResult:
     test_metrics: dict[str, float]
     train_seconds: float
     eval_seconds: float
-    environment: dict[str, Any] = field(default_factory=dict)
-    reproduce: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise the result into a JSON-ready dictionary."""
@@ -222,8 +110,6 @@ class ExperimentResult:
             "config": dataclasses.asdict(self.config),
             "dataset": self.dataset_summary,
             "device": self.device,
-            "environment": self.environment,
-            "reproduce": self.reproduce,
             "num_parameters": self.num_parameters,
             "best_epoch": self.best_epoch,
             "best_val_metrics": self.best_val_metrics,
@@ -332,8 +218,6 @@ class Trainer:
             test_metrics=test_metrics,
             train_seconds=train_seconds,
             eval_seconds=eval_seconds,
-            environment=environment_info(self.device),
-            reproduce=reproduce_command(self.config, self.exp_name),
         )
 
     # ------------------------------------------------------------------ internals
@@ -363,9 +247,6 @@ class Trainer:
         best_epoch: int | None = None
         best_val_metrics: dict[str, float] = {}
         epochs_without_improvement = 0
-        # Only a checkpoint written by *this* run may be restored: a file left over from a
-        # previous run with the same `exp_name` must never be loaded silently.
-        saved_this_run = False
 
         for epoch in range(1, train_cfg.epochs + 1):
             train_loss, seconds = self._train_epoch(
@@ -393,7 +274,6 @@ class Trainer:
                     best_val_metrics = val_metrics
                     epochs_without_improvement = 0
                     self._save_checkpoint(epoch, val_metrics)
-                    saved_this_run = True
                 else:
                     epochs_without_improvement += 1
             history.append(record)
@@ -401,24 +281,8 @@ class Trainer:
             if epochs_without_improvement >= train_cfg.patience:
                 break
 
-        if saved_this_run:
+        if best_epoch is not None:
             self._load_best_checkpoint()
-        elif history:
-            # No validation happened in this run (e.g. `val_every > epochs`), so there is no
-            # checkpoint of our own. Evaluate the final weights explicitly instead of loading
-            # a stale file, and report that epoch as the (only) validated one.
-            final_epoch = history[-1].epoch
-            final_metrics = self.evaluator.evaluate(
-                self.model,
-                self.bundle.val_loader,
-                "val",
-                show_progress=self.show_progress,
-            )
-            history[-1].val_metrics = final_metrics
-            history[-1].val_primary = final_metrics.get(primary_key, float("nan"))
-            best_epoch = final_epoch
-            best_val_metrics = final_metrics
-            self._save_checkpoint(final_epoch, final_metrics)
         return history, best_epoch, best_val_metrics
 
     def _train_epoch(
@@ -473,16 +337,8 @@ class Trainer:
         )
 
     def _load_best_checkpoint(self) -> None:
-        """Restore the best checkpoint written by this run.
-
-        The caller must only invoke this after :meth:`_save_checkpoint` succeeded during the
-        current run; a missing file is a programming error rather than a silent no-op.
-        """
         if not self.checkpoint_path.exists():
-            raise FileNotFoundError(
-                f"No checkpoint was written by this run at {self.checkpoint_path}; "
-                "refusing to fall back to a checkpoint from a previous run."
-            )
+            return
         state = torch.load(
             self.checkpoint_path, map_location=self.device, weights_only=True
         )
