@@ -37,9 +37,7 @@ an answer.
 (
     lf.group_by("region", "product")
     .agg(pl.col("revenue").sum().alias("total"))
-    .filter(
-        pl.col("total").rank("dense", descending=True).over("region") <= 3
-    )
+    .filter(pl.col("total").rank("dense", descending=True).over("region") <= 3)
     .sort("region", "total", descending=[False, True])
     .collect()
 )
@@ -71,9 +69,7 @@ Per-group variant: `.shift(1).over("region")`, sorted by
 (
     lf.group_by("category")
     .agg(pl.col("revenue").sum().alias("revenue"))
-    .with_columns(
-        share_pct=pl.col("revenue") / pl.col("revenue").sum() * 100
-    )
+    .with_columns(share_pct=pl.col("revenue") / pl.col("revenue").sum() * 100)
     .sort("share_pct", descending=True)
     .collect()
 )
@@ -140,10 +136,8 @@ for one series per category.
 (
     lf.group_by("region")
     .agg(
-        pl.col("amount").filter(pl.col("status") == "paid")
-            .sum().alias("paid"),
-        pl.col("amount").filter(pl.col("status") == "pending")
-            .sum().alias("pending"),
+        pl.col("amount").filter(pl.col("status") == "paid").sum().alias("paid"),
+        pl.col("amount").filter(pl.col("status") == "pending").sum().alias("pending"),
         (pl.col("status") == "refunded").sum().alias("refund_count"),
     )
     .sort("region")
@@ -194,9 +188,9 @@ Cheap checks that catch most wrong answers:
 ```python
 result = query.collect()
 
-result.height                      # plausible number of rows?
-result.null_count()                # unexpected nulls from a join or cast?
-lf.select(pl.len()).collect()      # input row count for a gut check
+result.height  # plausible number of rows?
+result.null_count()  # unexpected nulls from a join or cast?
+lf.select(pl.len()).collect()  # input row count for a gut check
 ```
 
 If a join produced more rows than the left input, the key was not unique

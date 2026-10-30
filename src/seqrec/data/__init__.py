@@ -18,7 +18,7 @@ from seqrec.data.preprocess import (
     DatasetMetadata,
     load_dataset_metadata,
     preprocess_single_dataset,
-     print_metadata_summary,
+    print_metadata_summary,
     run_preprocess,
 )
 

@@ -65,9 +65,9 @@ questions) and the sanity checks to run before answering.
 1. **Discover the schema first. Never guess column names or dtypes.**
 
 ```python
-lf = pl.scan_csv("sales.csv")        # or scan_parquet / scan_ndjson
-print(lf.collect_schema())           # names and dtypes, no data read
-print(lf.head(5).collect())          # eyeball values, formats, dirt
+lf = pl.scan_csv("sales.csv")  # or scan_parquet / scan_ndjson
+print(lf.collect_schema())  # names and dtypes, no data read
+print(lf.head(5).collect())  # eyeball values, formats, dirt
 ```
 
 2. **Translate the question into one lazy chain** following the canonical
@@ -115,7 +115,7 @@ lf.with_columns([(pl.col(c) * 1.1).alias(f"{c}_adj") for c in ["a", "b", "c"]])
 
 # prefer: one expression, expanded by the schema
 lf.with_columns((pl.col("a", "b", "c") * 1.1).name.suffix("_adj"))
-lf.with_columns(cs.numeric().fill_null(0))          # in place, same names
+lf.with_columns(cs.numeric().fill_null(0))  # in place, same names
 ```
 
 ## Canonical query pattern
@@ -126,22 +126,22 @@ Build queries in this order. Each step reduces data before the next.
 customers = pl.scan_csv("customers.csv")
 
 result = (
-    pl.scan_csv("orders.csv")                    # 1. scan, never read
-    .filter(pl.col("year") == 2024)              # 2. filter early
-    .join(customers, on="customer_id", how="left")   # 3. join filtered data
-    .with_columns(                               # 4. add computed columns
+    pl.scan_csv("orders.csv")  # 1. scan, never read
+    .filter(pl.col("year") == 2024)  # 2. filter early
+    .join(customers, on="customer_id", how="left")  # 3. join filtered data
+    .with_columns(  # 4. add computed columns
         (pl.col("revenue") - pl.col("cost")).alias("profit")
     )
-    .group_by("region")                          # 5. group
-    .agg(                                        # 6. aggregate
+    .group_by("region")  # 5. group
+    .agg(  # 6. aggregate
         pl.col("profit").sum().alias("total_profit"),
         pl.col("profit").mean().alias("avg_profit"),
         pl.len().alias("count"),
     )
-    .filter(pl.col("count") > 10)                # 7. filter groups
-    .sort("total_profit", descending=True)       # 8. sort
+    .filter(pl.col("count") > 10)  # 7. filter groups
+    .sort("total_profit", descending=True)  # 8. sort
     .select("region", "total_profit", "avg_profit")  # 9. final columns
-    .collect()                                   # 10. execute once
+    .collect()  # 10. execute once
 )
 ```
 

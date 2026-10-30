@@ -96,7 +96,9 @@ def build_session_graph_batch(
     graph_items = torch.where(is_unique_node, input_ids, torch.zeros_like(input_ids))
 
     # Build directed transitions (u -> v) for t in 0 .. seq_len - 2
-    adj = torch.zeros((batch_size, max_len, max_len), dtype=torch.float32, device=device)
+    adj = torch.zeros(
+        (batch_size, max_len, max_len), dtype=torch.float32, device=device
+    )
     if max_len > 1:
         u = alias_inputs[:, :-1]  # [B, N-1]
         v = alias_inputs[:, 1:]  # [B, N-1]
@@ -297,7 +299,9 @@ class ClozeSeqDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]):
     def __len__(self) -> int:
         return int(self.user_ids.size(0))
 
-    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(
+        self, index: int
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return self.user_ids[index], self.clean_ids[index], self.seq_lens[index]
 
     def collate_fn(
@@ -322,7 +326,9 @@ class ClozeSeqDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]):
         }
 
 
-class SessionGraphDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]):
+class SessionGraphDataset(
+    Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]
+):
     """Prefix-expanded dataset for session-graph training (SR-GNN)."""
 
     def __init__(
@@ -347,7 +353,9 @@ class SessionGraphDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor
 
             # Expand into (prefix, next_item) pairs, keeping up to `max_prefixes_per_user` recent prefixes
             start_target_idx = (
-                max(1, len(seq) - max_prefixes_per_user) if max_prefixes_per_user > 0 else 1
+                max(1, len(seq) - max_prefixes_per_user)
+                if max_prefixes_per_user > 0
+                else 1
             )
             for tgt_idx in range(start_target_idx, len(seq)):
                 prefix = seq[max(0, tgt_idx - max_seq_len) : tgt_idx]
@@ -384,7 +392,9 @@ class SessionGraphDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor
         input_ids = torch.stack([b[1] for b in batch], dim=0)
         target_id = torch.stack([b[2] for b in batch], dim=0)
         seq_len = torch.stack([b[3] for b in batch], dim=0)
-        graph_items, alias_inputs, adj_in, adj_out = build_session_graph_batch(input_ids, seq_len)
+        graph_items, alias_inputs, adj_in, adj_out = build_session_graph_batch(
+            input_ids, seq_len
+        )
         return {
             "user_id": user_id,
             "input_ids": input_ids,
@@ -439,7 +449,9 @@ class EvalSeqDataset(Dataset[EvalSample]):
                     raw_seq_len=raw_len,
                     len_bucket_id=LEN_BUCKET_TO_ID[str(row["len_bucket"])],
                     target_id=int(row["target_id"]),
-                    target_pop_bucket_id=POP_BUCKET_TO_ID[str(row["target_pop_bucket"])],
+                    target_pop_bucket_id=POP_BUCKET_TO_ID[
+                        str(row["target_pop_bucket"])
+                    ],
                     future_id=int(row["future_id"]),
                     seen_ids=history,
                 )
@@ -460,8 +472,12 @@ class EvalSeqDataset(Dataset[EvalSample]):
             "user_id": torch.tensor([s.user_id for s in batch], dtype=torch.long),
             "input_ids": torch.tensor([s.input_ids for s in batch], dtype=torch.long),
             "seq_len": torch.tensor([s.seq_len for s in batch], dtype=torch.long),
-            "raw_seq_len": torch.tensor([s.raw_seq_len for s in batch], dtype=torch.long),
-            "len_bucket_id": torch.tensor([s.len_bucket_id for s in batch], dtype=torch.long),
+            "raw_seq_len": torch.tensor(
+                [s.raw_seq_len for s in batch], dtype=torch.long
+            ),
+            "len_bucket_id": torch.tensor(
+                [s.len_bucket_id for s in batch], dtype=torch.long
+            ),
             "target_id": torch.tensor([s.target_id for s in batch], dtype=torch.long),
             "target_pop_bucket_id": torch.tensor(
                 [s.target_pop_bucket_id for s in batch], dtype=torch.long
@@ -478,7 +494,9 @@ class DataBundle:
     metadata: DatasetMetadata
     max_seq_len: int
     item_pop_counts: torch.Tensor  # shape [num_items + 1], index 0 is 0
-    item_pop_buckets: torch.Tensor  # shape [num_items + 1], index 0 is -1, 1..V in {0,1,2}
+    item_pop_buckets: (
+        torch.Tensor
+    )  # shape [num_items + 1], index 0 is -1, 1..V in {0,1,2}
     train_loader: DataLoader[Any] | None
     val_loader: DataLoader[EvalSample]
     test_loader: DataLoader[EvalSample]
@@ -518,7 +536,9 @@ def build_databundle(
     # Build item popularity count and bucket tensors indexed by item_id in [0, num_items]
     pop_sorted = pop_df.sort("item_id")
     counts_list = [0] + [int(x) for x in pop_sorted["train_count"].to_list()]
-    buckets_list = [-1] + [POP_BUCKET_TO_ID[str(b)] for b in pop_sorted["pop_bucket"].to_list()]
+    buckets_list = [-1] + [
+        POP_BUCKET_TO_ID[str(b)] for b in pop_sorted["pop_bucket"].to_list()
+    ]
     item_pop_counts = torch.tensor(counts_list, dtype=torch.float32)
     item_pop_buckets = torch.tensor(buckets_list, dtype=torch.long)
 

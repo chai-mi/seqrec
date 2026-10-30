@@ -60,7 +60,8 @@ def plot_seq_len_distribution(data_dir: Path) -> alt.Chart:
         )
         frames.append(df)
     return (
-        alt.Chart(pl.concat(frames))
+        # Altair's mark_bar generic return type is misinferred by ty (see AGENTS.md).
+        alt.Chart(pl.concat(frames))  # ty: ignore[unresolved-attribute]
         .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
         .encode(
             x=alt.X(
@@ -100,11 +101,7 @@ def plot_item_popularity_curve(data_dir: Path) -> alt.Chart:
             )
             .with_columns(
                 pl.lit(ds_name).alias("dataset"),
-                (
-                    pl.col("interactions")
-                    / pl.col("interactions").sum()
-                    * 100.0
-                )
+                (pl.col("interactions") / pl.col("interactions").sum() * 100.0)
                 .round(2)
                 .alias("pct_interactions"),
             )
@@ -112,7 +109,8 @@ def plot_item_popularity_curve(data_dir: Path) -> alt.Chart:
         )
         frames.append(df)
     return (
-        alt.Chart(pl.concat(frames))
+        # Keep the known Altair/ty workaround local to this chart expression.
+        alt.Chart(pl.concat(frames))  # ty: ignore[unresolved-attribute]
         .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
         .encode(
             x=alt.X(

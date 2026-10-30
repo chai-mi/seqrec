@@ -30,8 +30,8 @@ same length or scalars; scalars broadcast.
 lf.select(
     pl.col("name"),
     (pl.col("revenue") - pl.col("cost")).alias("profit"),
-    pl.col("age").mean().alias("avg_age"),   # scalar, broadcast
-    pl.lit(25).alias("target"),              # literal, broadcast
+    pl.col("age").mean().alias("avg_age"),  # scalar, broadcast
+    pl.lit(25).alias("target"),  # literal, broadcast
 )
 ```
 
@@ -50,9 +50,9 @@ broadcasts to every row — it does not error. Use `over("group")` for the
 ```python
 lf.with_columns(
     (pl.col("quantity") * pl.col("price")).alias("total"),
-    pl.col("price").cast(pl.Float64),                # replaces "price"
+    pl.col("price").cast(pl.Float64),  # replaces "price"
     pl.col("date").dt.year().alias("year"),
-    is_active=(pl.col("status") == "active"),        # kwarg = alias
+    is_active=(pl.col("status") == "active"),  # kwarg = alias
 )
 ```
 
@@ -118,14 +118,14 @@ lf.group_by(
 Aggregation building blocks:
 
 ```python
-pl.col("v").sum()                   # also: mean, median, std, min, max
-pl.col("v").quantile(0.95)          # e.g. 0.95 = 95th percentile
-pl.len()                            # rows in group, nulls included
-pl.col("v").count()                 # non-null values
-pl.col("v").null_count()            # null values in group
-pl.col("v").n_unique()              # distinct values in group
-pl.col("v").first()                 # also: last(); current row order within group
-pl.col("v").implode()               # collect group values into a list
+pl.col("v").sum()  # also: mean, median, std, min, max
+pl.col("v").quantile(0.95)  # e.g. 0.95 = 95th percentile
+pl.len()  # rows in group, nulls included
+pl.col("v").count()  # non-null values
+pl.col("v").null_count()  # null values in group
+pl.col("v").n_unique()  # distinct values in group
+pl.col("v").first()  # also: last(); current row order within group
+pl.col("v").implode()  # collect group values into a list
 ```
 
 Conditional aggregation, the workhorse for breakdown questions —
@@ -141,8 +141,7 @@ Sorting within a group to get "the X with the highest Y":
 
 ```python
 lf.group_by("category").agg(
-    pl.col("product").sort_by("revenue", descending=True)
-        .first().alias("top_product")
+    pl.col("product").sort_by("revenue", descending=True).first().alias("top_product")
 )
 ```
 
@@ -158,8 +157,7 @@ row.
 ```python
 lf.with_columns(
     dept_avg=pl.col("salary").mean().over("department"),
-    rank_in_cat=pl.col("score").rank("dense", descending=True)
-        .over("category"),
+    rank_in_cat=pl.col("score").rank("dense", descending=True).over("category"),
     running=pl.col("amount").cum_sum().over("customer_id"),
     prev_price=pl.col("price").shift(1).over("product_id"),
     city_total=pl.col("sales").sum().over("country", "city"),
@@ -180,10 +178,7 @@ Mapping strategies control how non-scalar window results map back:
   changes. Useful for top-n-per-group projections.
 
 ```python
-lf.select(
-    pl.col("athlete").sort_by("rank")
-        .over("country", mapping_strategy="explode")
-)
+lf.select(pl.col("athlete").sort_by("rank").over("country", mapping_strategy="explode"))
 ```
 
 ## sort()
@@ -201,8 +196,8 @@ lf.sort("value", nulls_last=True)
 lf.join(other, on="id", how="inner")
 lf.join(other, on=["year", "month"], how="left")
 lf.join(other, left_on="id", right_on="user_id", how="left")
-lf.join(other, on="id", how="anti")    # rows in lf with no match
-lf.join(other, on="id", how="semi")    # rows in lf with a match, lf cols only
+lf.join(other, on="id", how="anti")  # rows in lf with no match
+lf.join(other, on="id", how="semi")  # rows in lf with a match, lf cols only
 ```
 
 Join facts that bite:
@@ -224,16 +219,13 @@ Same order as the canonical pattern in `SKILL.md`; note the second
 
 ```python
 result = (
-    lf
-    .filter((pl.col("year") == 2024) & (pl.col("status") == "completed"))
+    lf.filter((pl.col("year") == 2024) & (pl.col("status") == "completed"))
     .group_by("region", "month")
     .agg(
         pl.col("profit").sum().alias("total_profit"),
         pl.col("customer_id").n_unique().alias("customers"),
     )
-    .with_columns(
-        per_customer=pl.col("total_profit") / pl.col("customers")
-    )
+    .with_columns(per_customer=pl.col("total_profit") / pl.col("customers"))
     .sort("total_profit", descending=True)
     .collect()
 )
@@ -243,11 +235,12 @@ Anti-patterns:
 
 ```python
 # filtering after expensive work
-lf.group_by("id").agg(...).filter(pl.col("year") == 2024)   # avoid
-lf.filter(pl.col("year") == 2024).group_by("id").agg(...)   # prefer
+lf.group_by("id").agg(...).filter(pl.col("year") == 2024)  # avoid
+lf.filter(pl.col("year") == 2024).group_by("id").agg(...)  # prefer
 
 # loop of contexts
-for c in cols: lf = lf.with_columns(pl.col(c) * 2)     # avoid
-lf.with_columns(pl.col(cols) * 2)                      # prefer, replaces cols
+for c in cols:
+    lf = lf.with_columns(pl.col(c) * 2)  # avoid
+lf.with_columns(pl.col(cols) * 2)  # prefer, replaces cols
 lf.with_columns((pl.col(cols) * 2).name.suffix("_x"))  # prefer, adds new cols
 ```

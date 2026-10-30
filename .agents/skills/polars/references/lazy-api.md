@@ -17,9 +17,9 @@ inspecting the plan; executing; larger-than-memory data and sinks; on Polars
 
 ```python
 lf = pl.scan_csv("data.csv")
-lf = pl.scan_parquet("data.parquet")      # also: scan_ndjson, scan_ipc
+lf = pl.scan_parquet("data.parquet")  # also: scan_ndjson, scan_ipc
 lf = pl.scan_parquet("events/*.parquet")  # globs scan many files as one
-lf = df.lazy()                            # from an eager DataFrame
+lf = df.lazy()  # from an eager DataFrame
 ```
 
 ## Starting from an in-memory DataFrame
@@ -32,13 +32,13 @@ collect on the way out:
 ```python
 def top_regions(df: pl.DataFrame, n: int) -> pl.DataFrame:
     return (
-        df.lazy()                                  # wrap
+        df.lazy()  # wrap
         .filter(pl.col("revenue") > 0)
         .group_by("region")
         .agg(pl.col("revenue").sum().alias("total"))
         .sort("total", descending=True)
         .head(n)
-        .collect()                                 # unwrap
+        .collect()  # unwrap
     )
 ```
 
@@ -53,9 +53,9 @@ Handle dirty data at the scan so the rest of the query stays strict:
 ```python
 lf = pl.scan_csv(
     "data.csv",
-    null_values=["N/A", "NULL", ""],   # become real nulls, not strings
-    try_parse_dates=True,              # ISO-like strings -> temporal dtypes
-    infer_schema_length=10_000,        # sample more rows for dtype inference
+    null_values=["N/A", "NULL", ""],  # become real nulls, not strings
+    try_parse_dates=True,  # ISO-like strings -> temporal dtypes
+    infer_schema_length=10_000,  # sample more rows for dtype inference
     schema_overrides={"zipcode": pl.String},  # pin dtypes inference gets wrong
 )
 ```
@@ -67,9 +67,9 @@ inspect with `lf.head(20).collect()`, then extend `null_values` or use
 ## Schema discovery without reading data
 
 ```python
-lf.collect_schema()          # {name: dtype}, resolves the plan, no data read
+lf.collect_schema()  # {name: dtype}, resolves the plan, no data read
 lf.collect_schema().names()
-lf.head(5).collect()         # tiny peek at actual values
+lf.head(5).collect()  # tiny peek at actual values
 ```
 
 Always run `collect_schema()` before executing a query: it validates the plan
@@ -81,8 +81,8 @@ difference between one-shot success and a loop of `ColumnNotFoundError`.
 ```python
 lf = pl.scan_csv("large.csv").select("a", "b").filter(pl.col("a") > 100)
 
-print(lf.explain())                    # optimized plan as text
-print(lf.explain(optimized=False))     # naive plan, for comparison
+print(lf.explain())  # optimized plan as text
+print(lf.explain(optimized=False))  # naive plan, for comparison
 ```
 
 In the optimized plan, look for the filter inside the scan node (predicate
@@ -93,7 +93,7 @@ columns where possible.
 ## Executing
 
 ```python
-result = lf.collect()                  # optimize + run, returns DataFrame
+result = lf.collect()  # optimize + run, returns DataFrame
 ```
 
 Collect exactly once per query. For debugging a long chain, prefer

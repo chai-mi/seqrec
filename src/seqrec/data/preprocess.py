@@ -86,7 +86,9 @@ def apply_k_core_filter(df: pl.DataFrame, min_interactions: int = 5) -> pl.DataF
     current = (
         df.lazy()
         .sort("raw_user_id", "timestamp", "raw_item_id")
-        .unique(subset=["raw_user_id", "raw_item_id"], keep="first", maintain_order=True)
+        .unique(
+            subset=["raw_user_id", "raw_item_id"], keep="first", maintain_order=True
+        )
         .collect()
     )
 
@@ -159,7 +161,9 @@ def compute_item_popularity_table(
     num_items: int,
 ) -> pl.DataFrame:
     """Compute item frequencies and Head (20%) / Mid (30%) / Tail (50%) popularity buckets."""
-    all_items = pl.DataFrame({"item_id": pl.arange(1, num_items + 1, eager=True, dtype=pl.Int64)})
+    all_items = pl.DataFrame(
+        {"item_id": pl.arange(1, num_items + 1, eager=True, dtype=pl.Int64)}
+    )
     counts = (
         train_sequences.lazy()
         .select(pl.col("item_seq").explode().alias("item_id"))
@@ -214,7 +218,9 @@ def build_loo_splits(
     )
 
     item_pop = compute_item_popularity_table(loo_train, num_items)
-    pop_lookup = item_pop.lazy().select("item_id", pl.col("pop_bucket").alias("target_pop_bucket"))
+    pop_lookup = item_pop.lazy().select(
+        "item_id", pl.col("pop_bucket").alias("target_pop_bucket")
+    )
 
     loo_val = (
         user_seqs.lazy()
@@ -263,7 +269,9 @@ def build_temporal_splits(
     )
     t90 = int(
         interactions.select(
-            pl.col("timestamp").quantile(train_ratio + val_ratio, interpolation="nearest")
+            pl.col("timestamp").quantile(
+                train_ratio + val_ratio, interpolation="nearest"
+            )
         ).item()
     )
 
@@ -280,7 +288,9 @@ def build_temporal_splits(
     )
 
     item_pop = compute_item_popularity_table(temporal_train, num_items)
-    pop_lookup = item_pop.lazy().select("item_id", pl.col("pop_bucket").alias("target_pop_bucket"))
+    pop_lookup = item_pop.lazy().select(
+        "item_id", pl.col("pop_bucket").alias("target_pop_bucket")
+    )
 
     # 2. Validation instances: users active in (t80, t90] with >= 2 interactions up to t90
     temporal_val = (
@@ -291,11 +301,15 @@ def build_temporal_splits(
             pl.col("item_id").alias("seq_up_to_t90"),
             (pl.col("timestamp") > t80).sum().alias("n_in_val"),
         )
-        .with_columns(pl.col("seq_up_to_t90").list.len().cast(pl.Int64).alias("total_len"))
+        .with_columns(
+            pl.col("seq_up_to_t90").list.len().cast(pl.Int64).alias("total_len")
+        )
         .filter((pl.col("n_in_val") >= 1) & (pl.col("total_len") >= 2))
         .select(
             pl.col("user_id"),
-            pl.col("seq_up_to_t90").list.slice(0, pl.col("total_len") - 1).alias("history"),
+            pl.col("seq_up_to_t90")
+            .list.slice(0, pl.col("total_len") - 1)
+            .alias("history"),
             pl.col("seq_up_to_t90").list.get(-1).cast(pl.Int64).alias("target_id"),
             pl.lit(0, dtype=pl.Int64).alias("future_id"),
         )
@@ -377,7 +391,9 @@ def preprocess_single_dataset(
         .row(0, named=True)
     )
 
-    loo_train, loo_val, loo_test, loo_item_pop = build_loo_splits(interactions, num_items)
+    loo_train, loo_val, loo_test, loo_item_pop = build_loo_splits(
+        interactions, num_items
+    )
     (
         temporal_train,
         temporal_val,
