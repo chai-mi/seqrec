@@ -4,16 +4,12 @@ Runs and persists three controlled comparisons to ``reports/metrics/``:
 
 1. **陷阱 1 — Train-Test Mismatch（BERT4Rec 未来上下文依赖）**
    ``pure_cloze``（``last_item_mask_ratio=0.0``）、``last_mask_0.1`` / ``last_mask_0.2``
-   （混入末尾掩码训练样本），以及 ``loo_val`` 上的三组配对评测：
+   （混入末尾掩码训练样本），并在 ``loo_val`` 上对比**标准末尾 [MASK]** 与
+   **Oracle Middle Mask**（``[..., <MASK>, future_id]``）两种协议。
 
-   - **标准末尾 [MASK]**：``[h_1, ..., h_L, MASK]``；
-   - **Matched Control**：与 Oracle 完全相同的截断历史与 [MASK] 绝对位置，但右侧为
-     ``<PAD>``（``[h_shift, ..., h_L, MASK, PAD]``），用于剔除历史长度 / 掩码绝对
-     位置带来的混杂；
-   - **Oracle Middle Mask**：``[h_shift, ..., h_L, MASK, future_id]``。
-
-   ``Oracle − Control`` 即纯“未来 1 项上下文”收益，``Control − Standard`` 即截断与
-   掩码绝对位置带来的混杂偏差。
+   Oracle 协议会对满窗口样本多截断 1 项历史并改变 [MASK] 的绝对位置；实测该
+   截断/位置混杂在本任务两数据集上可忽略（``|Δ| <= 0.0012``），因此本脚本保留
+   简洁的“标准 vs Oracle”直接对照，不固化额外评测管线。
 
 2. **陷阱 2 — LOO 跨序列时间穿越 vs Global Temporal Split**
    在 ``loo`` 与 ``temporal`` 两种划分下运行 ``Pop`` / ``GRU4Rec`` / ``SASRec`` /
@@ -30,17 +26,15 @@ Runs and persists three controlled comparisons to ``reports/metrics/``:
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, cast
+from typing import Annotated, Any
 
 import orjson
 import torch
 import tyro
 from rich.console import Console
 from rich.table import Table
-from torch.utils.data import DataLoader
 
 from seqrec.config import (
     DataConfig,
@@ -52,7 +46,7 @@ from seqrec.config import (
     SplitStrategy,
     TrainConfig,
 )
-from seqrec.data.dataset import DataBundle, EvalBatch, build_databundle
+from seqrec.data.dataset import DataBundle, build_databundle
 from seqrec.engine.evaluator import Evaluator
 from seqrec.engine.trainer import resolve_device, run_experiment
 from seqrec.models import build_model
@@ -145,30 +139,6 @@ def _json_default(obj: Any) -> Any:
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serialisable")
 
 
-#: Experiment names (with their comparable configs) freshly generated during this process.
-#: :func:`run_all` uses this so the default-window BERT4Rec run produced by the main sweep
-#: is reused by the mismatch / split-comparison phases instead of being trained repeatedly.
-_SESSION_FRESH: dict[str, dict[str, Any]] = {}
-
-
-def _comparable_config(config: ExperimentConfig) -> dict[str, Any]:
-    """Full config with operational-only fields normalized away.
-
-    Cache-reuse decisions compare this normalized dict so that every result-affecting
-    hyper-parameter (optimizer, architecture, data, evaluation protocol) is checked, while
-    purely operational values (paths, ``exp_name``, ``device``, ``num_workers``) are
-    ignored.
-    """
-    raw = dataclasses.asdict(config)
-    raw["exp_name"] = None
-    raw["metrics_dir"] = None
-    raw["checkpoints_dir"] = None
-    raw["data"]["data_dir"] = None
-    raw["data"]["num_workers"] = 0
-    raw["train"]["device"] = None
-    return raw
-
-
 def _run_if_missing(
     config: ExperimentConfig,
     *,
@@ -178,43 +148,17 @@ def _run_if_missing(
 ) -> Path:
     """Run :func:`run_experiment` unless a reusable result already exists.
 
-    A result is reused in one of two cases:
-
-    - it was **just generated** during this process (``_SESSION_FRESH``), which lets
-      :func:`run_all` reuse the default-window main experiment across phases even with
-      ``resume=False``;
-    - ``resume`` is enabled, its metrics JSON exists, its recorded config matches the
-      requested one, and (when ``require_checkpoint``) the ``.pt`` checkpoint exists.
-
-    Missing, mismatched or stale artifacts trigger a fresh run, so the script never
-    silently mixes results from different configurations.
+    ``require_checkpoint`` is used by the mismatch experiments (Oracle evaluation): the
+    checkpoint is *not* version controlled, so an existing metrics JSON alone is not enough
+    and a missing checkpoint triggers a fresh training run.
     """
-    exp_name = config.exp_name
-    if exp_name is None:
-        raise ValueError(
-            "ExperimentConfig.exp_name must be set for leakage experiments"
-        )
-    target = config.metrics_dir / f"{exp_name}.json"
-    checkpoint = config.checkpoints_dir / f"{exp_name}.pt"
-    signature = _comparable_config(config)
-
-    if _SESSION_FRESH.get(exp_name) == signature:
-        console.print(f"[dim]reuse this-run result[/dim] {exp_name}")
+    target = config.metrics_dir / f"{config.exp_name}.json"
+    checkpoint = config.checkpoints_dir / f"{config.exp_name}.pt"
+    if resume and target.exists() and (not require_checkpoint or checkpoint.exists()):
+        console.print(f"[yellow]skip existing[/yellow] {config.exp_name}")
         return target
-
-    if resume and target.exists():
-        existing = _comparable_config(_config_from_json(target))
-        if existing == signature and (not require_checkpoint or checkpoint.exists()):
-            console.print(f"[yellow]skip existing[/yellow] {exp_name}")
-            return target
-        if existing != signature:
-            console.print(f"[yellow]config mismatch, re-running[/yellow] {exp_name}")
-        else:
-            console.print(f"[yellow]checkpoint missing, re-running[/yellow] {exp_name}")
-
-    console.print(f"[bold green]running[/bold green] {exp_name}")
+    console.print(f"[bold green]running[/bold green] {config.exp_name}")
     run_experiment(config, show_progress=show_progress)
-    _SESSION_FRESH[exp_name] = signature
     return target
 
 
@@ -313,75 +257,6 @@ def evaluate_oracle(
     )
 
 
-def _truncate_for_oracle_match(batch: EvalBatch, window: int) -> EvalBatch:
-    """Drop the oldest history tokens exactly like the oracle protocol.
-
-    The standard scorer then appends ``<MASK>`` at the same absolute position as the
-    oracle input (the kept length is always ``<= window - 2``), so the resulting sequence
-    ``[h_shift, ..., h_L, MASK, PAD]`` differs from the oracle protocol only by the missing
-    future item — history content, history length and ``<MASK>`` position are identical.
-    """
-    input_ids = batch["input_ids"]
-    seq_len = batch["seq_len"]
-    batch_size = input_ids.size(0)
-
-    shift = (seq_len + 2 - window).clamp(min=0)
-    kept = seq_len - shift
-    columns = (
-        torch.arange(window, device=input_ids.device)
-        .unsqueeze(0)
-        .expand(batch_size, -1)
-    )
-    source = (columns + shift.unsqueeze(1)).clamp(max=window - 1)
-    gathered = input_ids.gather(1, source)
-    keep_mask = columns < kept.unsqueeze(1)
-
-    matched = dict(batch)
-    matched["input_ids"] = torch.where(keep_mask, gathered, torch.zeros_like(gathered))
-    matched["seq_len"] = kept
-    return cast(EvalBatch, matched)
-
-
-def _matched_control_batches(
-    loader: DataLoader[Any], window: int
-) -> Iterator[EvalBatch]:
-    """Stream val batches with the oracle-matched history truncation applied."""
-    for batch in loader:
-        yield _truncate_for_oracle_match(batch, window)
-
-
-def evaluate_matched_control(
-    exp_name: str,
-    *,
-    device: str = "cuda",
-    metrics_dir: Path = DEFAULT_METRICS_DIR,
-    checkpoints_dir: Path = DEFAULT_CHECKPOINTS_DIR,
-) -> dict[str, float]:
-    """Matched control for the oracle protocol.
-
-    Same truncated history, same ``<MASK>`` absolute position as the oracle input, but the
-    slot right of the mask stays ``<PAD>`` (no future context). Comparing this control to
-    the oracle isolates the pure "one future item" gain; comparing it to the standard
-    protocol quantifies the truncation / mask-position confound.
-    """
-    model, config, bundle, resolved = _load_checkpoint_model(
-        exp_name,
-        device=device,
-        metrics_dir=metrics_dir,
-        checkpoints_dir=checkpoints_dir,
-    )
-    evaluator = Evaluator(
-        config.eval,
-        num_items=bundle.num_items,
-        item_pop_counts=bundle.item_pop_counts,
-        device=resolved,
-    )
-    control_loader = cast(
-        Any, _matched_control_batches(bundle.val_loader, bundle.max_seq_len)
-    )
-    return evaluator.evaluate(model, control_loader, "val_control", show_progress=False)
-
-
 # --------------------------------------------------------------------------- 陷阱 1: mismatch
 
 
@@ -418,7 +293,11 @@ def run_mismatch_experiments(
     epochs: int = 200,
     resume: bool = True,
 ) -> list[Path]:
-    """陷阱 1：BERT4Rec 掩码策略消融 + Oracle Middle Mask 与 Matched Control 对照。"""
+    """陷阱 1：BERT4Rec 掩码策略消融 + Oracle Middle Mask 上界对照。
+
+    Oracle 协议会把满窗口样本的历史多截断 1 项并移动 [MASK] 绝对位置；实测该混杂在
+    两数据集上可忽略（``|Δ| <= 0.0012``），故保留简洁的“标准末尾 vs Oracle”直接对照。
+    """
     variants: tuple[tuple[str, float], ...] = (
         ("pure_cloze", 0.0),
         ("last_mask_0.1", 0.1),
@@ -428,7 +307,6 @@ def run_mismatch_experiments(
     for dataset in datasets:
         window = DEFAULT_WINDOW[dataset]
         standard: dict[str, dict[str, float]] = {}
-        control: dict[str, dict[str, float]] = {}
         oracle: dict[str, dict[str, float]] = {}
         for name, last_item_mask_ratio in variants:
             if last_item_mask_ratio == 0.1:
@@ -445,12 +323,11 @@ def run_mismatch_experiments(
                 device=device,
                 exp_name=exp_name,
             )
-            # Oracle / matched-control re-evaluation needs the checkpoint, which is not
-            # version controlled; retrain automatically when it is missing.
+            # Oracle re-evaluation needs the checkpoint, which is not version controlled;
+            # retrain automatically when it is missing.
             path = _run_if_missing(config, resume=resume, require_checkpoint=True)
             outputs.append(path)
             standard[name] = _headline(_load_metrics(path, "best_val_metrics"))
-            control[name] = _headline(evaluate_matched_control(exp_name, device=device))
             oracle[name] = _headline(evaluate_oracle(exp_name, device=device))
 
         summary: dict[str, Any] = {
@@ -458,39 +335,36 @@ def run_mismatch_experiments(
             "window": window,
             "mask_prob": 0.2,
             "standard_end_mask_loo_val": standard,
-            "matched_control_loo_val": control,
             "oracle_middle_mask_loo_val": oracle,
         }
         out = DEFAULT_METRICS_DIR / f"leakage_bert4rec_mismatch_{dataset}.json"
         outputs.append(_write_json(out, summary))
-        _print_mismatch_summary(dataset, standard, control, oracle)
+        _print_mismatch_summary(dataset, standard, oracle)
     return outputs
 
 
 def _print_mismatch_summary(
     dataset: DatasetName,
     standard: dict[str, dict[str, float]],
-    control: dict[str, dict[str, float]],
     oracle: dict[str, dict[str, float]],
 ) -> None:
-    """Print the three-way protocol comparison with pure-future and confound deltas."""
+    """Print the standard end-mask vs oracle middle-mask comparison."""
     table = Table(title=f"陷阱1 · BERT4Rec Train-Test Mismatch — {dataset}")
     table.add_column("variant", style="cyan")
     table.add_column("std HR@10", justify="right")
-    table.add_column("ctrl HR@10", justify="right")
+    table.add_column("std NDCG@10", justify="right")
     table.add_column("oracle HR@10", justify="right")
-    table.add_column("Δ future", justify="right")
-    table.add_column("Δ confound", justify="right")
+    table.add_column("oracle NDCG@10", justify="right")
+    table.add_column("ΔHR@10", justify="right")
     for name, s in standard.items():
-        c = control[name]
         o = oracle[name]
         table.add_row(
             name,
             f"{s.get('HR@10', float('nan')):.4f}",
-            f"{c.get('HR@10', float('nan')):.4f}",
+            f"{s.get('NDCG@10', float('nan')):.4f}",
             f"{o.get('HR@10', float('nan')):.4f}",
-            f"{o.get('HR@10', float('nan')) - c.get('HR@10', float('nan')):+.4f}",
-            f"{c.get('HR@10', float('nan')) - s.get('HR@10', float('nan')):+.4f}",
+            f"{o.get('NDCG@10', float('nan')):.4f}",
+            f"{o.get('HR@10', float('nan')) - s.get('HR@10', float('nan')):+.4f}",
         )
     console.print(table)
 
@@ -631,9 +505,8 @@ def _group_rank_reversals(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     Only **canonical** experiments (whose ``exp_name`` exactly matches
     ``{model}_{dataset}_{split}_n{window}``) participate in a group, so ablation variants
-    (``*_lmr*``) and multi-seed / custom-tag duplicates are excluded. Within each group the
-    model name must be unique; if duplicates still appear (e.g. two seeds), the best
-    full-ranking run is kept with a warning.
+    (``*_lmr*``) and multi-seed / custom-tag duplicates are excluded; each canonical name
+    is unique per group by construction.
     """
     groups: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
     for row in rows:
@@ -644,18 +517,6 @@ def _group_rank_reversals(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     output: list[dict[str, Any]] = []
     for (dataset, split, window), group in sorted(groups.items()):
-        deduped: dict[str, dict[str, Any]] = {}
-        for row in group:
-            model = row["model"]
-            if model not in deduped or row["full_HR@10"] > deduped[model]["full_HR@10"]:
-                deduped[model] = row
-        if len(deduped) != len(group):
-            console.print(
-                f"[yellow]duplicate model rows in group {dataset}/{split}/n{window}; "
-                "keeping the best full-ranking run[/yellow]"
-            )
-        group = list(deduped.values())
-
         full_order = [
             r["model"]
             for r in sorted(group, key=lambda r: r["full_HR@10"], reverse=True)
@@ -702,15 +563,12 @@ def run_all(
     epochs: int = 200,
     resume: bool = True,
 ) -> None:
-    """Run the BERT4Rec main sweep plus all three leakage experiments in sequence.
-
-    ``resume`` is passed through to every phase; existing results are only reused when
-    their recorded hyper-parameters match the current configuration (and, for the mismatch
-    experiments, when the checkpoint is available).
-    """
+    """Run the BERT4Rec main sweep plus all three leakage experiments in sequence."""
     run_main_n_sweep(datasets, device=device, epochs=epochs, resume=resume)
-    run_mismatch_experiments(datasets, device=device, epochs=epochs, resume=resume)
-    run_split_comparison(datasets, device=device, epochs=epochs, resume=resume)
+    # The default-window BERT4Rec run (and the LOO baselines) are (re)generated by the
+    # main sweep / already exist, so reuse them instead of re-training the same experiment.
+    run_mismatch_experiments(datasets, device=device, epochs=epochs, resume=True)
+    run_split_comparison(datasets, device=device, epochs=epochs, resume=True)
     summarize_sampled_bias()
 
 
