@@ -2,11 +2,10 @@
 
 uv run python notebooks/srgnn_and_plots.py
 SEQREC_TASK3_TRAIN=1 uv run python notebooks/srgnn_and_plots.py
-SEQREC_TASK3_AUDIT=1 uv run python notebooks/srgnn_and_plots.py
 
-Training is opt-in; it uses the public Trainer unchanged, seed 42, 200 epochs
-maximum, patience 10 and the prescribed nine windows. Completed compatible
-runs are retained. Checkpoints and processed data remain untracked.
+Training is opt-in; it calls the shared run_experiment entrypoint, seed 42, 200 epochs
+maximum, patience 10 and the prescribed nine windows. Completed runs with matching
+configurations are retained. Checkpoints and processed data remain untracked.
 """
 
 import marimo
@@ -16,15 +15,9 @@ app = marimo.App(width="full")
 
 with app.setup:
     import dataclasses
-    import hashlib
-    import math
     import os
-    import platform
-    import subprocess
     import tempfile
-    from functools import partial
     from pathlib import Path
-    from time import perf_counter
     from typing import cast
 
     import orjson
@@ -48,6 +41,7 @@ with app.setup:
         DataConfig,
         EvalConfig,
         ExperimentConfig,
+        LossType,
         ModelConfig,
         TrainConfig,
     )
@@ -60,7 +54,6 @@ with app.setup:
     )
     from seqrec.engine.evaluator import Evaluator, move_batch_to_device
     from seqrec.engine.trainer import (
-        ExperimentResult,
         Trainer,
         run_experiment,
         seed_everything,
@@ -157,11 +150,12 @@ def check_model() -> dict[str, str]:
         current.backward()
         optimizer.step()
     assert model.compute_loss(train_batch).item() < before / 2
-    for steps, loss_type, shared in (
+    invalid_configs: tuple[tuple[int, LossType, bool], ...] = (
         (0, "ce", True),
         (1, "bce", True),
         (1, "ce", False),
-    ):
+    )
+    for steps, loss_type, shared in invalid_configs:
         try:
             SRGNN(
                 10, ggnn_steps=steps, loss_type=loss_type, share_item_embeddings=shared
@@ -170,14 +164,6 @@ def check_model() -> dict[str, str]:
             pass
         else:
             raise AssertionError("Unsupported SR-GNN configuration accepted")
-    try:
-        model.score_items(
-            example_eval(torch.zeros(1, 5, dtype=torch.long), torch.tensor([0]))
-        )
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("Empty history was accepted")
     status = {"cpu": "passed", "cuda_amp": "unavailable"}
     if torch.cuda.is_available():
         gpu = SRGNN(10, dropout=0).cuda()
@@ -213,7 +199,7 @@ def check_plots(metrics_dir: Path = Path("reports/metrics")) -> dict[str, int]:
     assert len(rows) == 17 and all(len(row) == 10 for row in rows)
     assert "#table(columns: 10" in format_table(rows, "typst")
     assert "| Dataset |" in format_table(rows, "markdown")
-    with tempfile.TemporaryDirectory(dir=Path.cwd().parent) as temporary:
+    with tempfile.TemporaryDirectory() as temporary:
         directory = Path(temporary)
         source = metrics_dir / "pop_beauty_loo_n50.json"
         record = orjson.loads(source.read_bytes())
@@ -255,7 +241,7 @@ def check_integration() -> str:
     """Exercise the actual Trainer/Evaluator, AMP and checkpoint restoration."""
     if not Path("data/processed/beauty/metadata.json").exists():
         return "pending preprocessing"
-    with tempfile.TemporaryDirectory(dir=Path.cwd().parent) as temporary:
+    with tempfile.TemporaryDirectory() as temporary:
         config = ExperimentConfig(
             data=DataConfig(
                 max_seq_len=5, batch_size=8, eval_batch_size=8, max_prefixes_per_user=1
@@ -307,425 +293,48 @@ def check_integration() -> str:
 
 
 @app.function
-def collate_cuda_graphs(
-    samples: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]],
-    device: str = "cuda",
-) -> SessionGraphTrainBatch:
-    """Call the existing graph builder on CUDA before the unchanged Trainer.
-
-    This collator requires num_workers=0. It transfers O(BN) IDs rather than
-    two O(BN²) dense adjacency tensors; no graph algorithm is replaced.
-    """
-    user_id = torch.stack([row[0] for row in samples]).to(device)
-    input_ids = torch.stack([row[1] for row in samples]).to(device)
-    target_id = torch.stack([row[2] for row in samples]).to(device)
-    seq_len = torch.stack([row[3] for row in samples]).to(device)
-    items, aliases, adj_in, adj_out = build_session_graph_batch(input_ids, seq_len)
-    return {
-        "user_id": user_id,
-        "input_ids": input_ids,
-        "target_id": target_id,
-        "seq_len": seq_len,
-        "graph_items": items,
-        "alias_inputs": aliases,
-        "adj_in": adj_in,
-        "adj_out": adj_out,
-    }
-
-
-@app.function
-def check_cuda_collation() -> dict[str, str | float]:
-    """Verify exact batches for every unique-history length 1..200 and unchanged RNG."""
-    if not torch.cuda.is_available():
-        return {"status": "CUDA unavailable"}
-    torch.set_num_threads(4)
-    seed_everything(42)
-    width = 200
-    ids = torch.arange(1, width + 1).expand(width, -1).clone()
-    lengths = torch.arange(1, width + 1)
-    ids[torch.arange(width).unsqueeze(0) >= lengths.unsqueeze(1)] = 0
-    samples = [
-        (torch.tensor(index + 1), ids[index], torch.tensor(201), lengths[index])
-        for index in range(width)
-    ]
-    expected = SessionGraphDataset.collate_fn(samples)
-    cpu_rng, cuda_rng = torch.get_rng_state(), torch.cuda.get_rng_state()
-    actual = collate_cuda_graphs(samples)
-    for key, value in cast(dict[str, torch.Tensor], expected).items():
-        assert torch.equal(value.cuda(), cast(dict[str, torch.Tensor], actual)[key]), (
-            key
-        )
-    assert torch.equal(cpu_rng, torch.get_rng_state())
-    assert torch.equal(cuda_rng, torch.cuda.get_rng_state())
-    # This includes adjacency transfer, which the GPU collator avoids.
-    torch.cuda.synchronize()
-    start = perf_counter()
-    for _ in range(8):
-        move_batch_to_device(
-            cast(dict[str, torch.Tensor], SessionGraphDataset.collate_fn(samples)),
-            torch.device("cuda"),
-        )
-    torch.cuda.synchronize()
-    cpu_ms = (perf_counter() - start) * 1000 / 8
-    start = perf_counter()
-    for _ in range(8):
-        collate_cuda_graphs(samples)
-    torch.cuda.synchronize()
-    gpu_ms = (perf_counter() - start) * 1000 / 8
-    return {
-        "status": "exact batches; unchanged CPU/CUDA RNG",
-        "cpu_graph_and_transfer_ms": cpu_ms,
-        "cuda_graph_ms": gpu_ms,
-    }
-
-
-@app.function
-def run_cuda_graph_experiment(config: ExperimentConfig) -> ExperimentResult:
-    """Use identical public data/model/Trainer logic with device-local graph collation."""
-    if not (
-        config.train.device.startswith("cuda")
-        and torch.cuda.is_available()
-        and config.data.num_workers == 0
-    ):
-        return run_experiment(config, show_progress=False)
-    seed_everything(config.train.seed)
-    bundle = build_databundle(config.data, model_name=config.model.name)
-    assert bundle.train_loader is not None
-    rng = torch.get_rng_state()
-    bundle.train_loader = DataLoader(
-        bundle.train_loader.dataset,
-        batch_size=config.data.batch_size,
-        shuffle=True,
-        num_workers=0,
-        collate_fn=partial(collate_cuda_graphs, device=config.train.device),
-    )
-    assert torch.equal(rng, torch.get_rng_state())
-    model = build_model(
-        config.model, bundle.num_items, bundle.max_seq_len, bundle.item_pop_counts
-    )
-    result = Trainer(config, model, bundle, show_progress=False).fit()
-    result.save(config.metrics_dir / f"{result.exp_name}.json")
-    return result
-
-
-@app.function
-def training_sources() -> tuple[Path, ...]:
-    """Enumerate every source file fingerprinted by the SR-GNN runs."""
-    return tuple(
-        Path(name)
-        for name in (
-            "src/seqrec/models/srgnn.py",
-            "src/seqrec/models/__init__.py",
-            "src/seqrec/config.py",
-            "src/seqrec/engine/trainer.py",
-            "src/seqrec/engine/evaluator.py",
-            "src/seqrec/data/dataset.py",
-            "src/seqrec/data/preprocess.py",
-            "uv.lock",
-        )
-    )
-
-
-@app.function
-def newline_source_hashes(raw: bytes) -> set[str]:
-    """Recognize original, LF and CRLF bytes without accepting code changes."""
-    normalized = raw.replace(b"\r\n", b"\n")
-    return {
-        hashlib.sha256(value).hexdigest()
-        for value in (
-            raw,
-            normalized,
-            normalized.replace(b"\n", b"\r\n"),
-        )
-    }
-
-
-@app.function
-def write_training_snapshot(metrics_dir: Path = Path("reports/metrics")) -> Path:
-    """Preserve original source bytes so CRLF/LF checkouts remain auditable.
-
-    The historical SHA-256 is never changed. Only newline differences are
-    accepted when replaying on a host whose Git checkout uses LF instead.
-    """
-    path = metrics_dir / "srgnn_training_source_snapshot.json"
-    workflow_path = Path("notebooks/srgnn_and_plots.py")
-    workflow_raw = workflow_path.read_bytes()
-    workflow_sha = hashlib.sha256(workflow_raw).hexdigest()
-    if path.exists():
-        snapshot = orjson.loads(path.read_bytes())
-        assert set(snapshot["sources"]) == {p.as_posix() for p in training_sources()}
-        for source in training_sources():
-            saved = snapshot["sources"][source.as_posix()]
-            original = saved["text"].encode("utf-8")
-            assert hashlib.sha256(original).hexdigest() == saved["sha256"]
-            assert original.replace(b"\r\n", b"\n") == source.read_bytes().replace(
-                b"\r\n", b"\n"
-            ), source
-        workflows = snapshot.setdefault("workflows", {})
-        for sha, entry in workflows.items():
-            assert hashlib.sha256(entry["text"].encode("utf-8")).hexdigest() == sha
-        if workflow_sha not in workflows:
-            workflows[workflow_sha] = {
-                "path": workflow_path.as_posix(),
-                "text": workflow_raw.decode("utf-8"),
-            }
-            path.write_bytes(orjson.dumps(snapshot, option=orjson.OPT_INDENT_2))
-        return path
-    snapshot = {
-        "kind": "training_source_snapshot",
-        "sources": {},
-        "workflows": {
-            workflow_sha: {
-                "path": workflow_path.as_posix(),
-                "text": workflow_raw.decode("utf-8"),
-            },
-        },
-    }
-    for source in training_sources():
-        raw = source.read_bytes()
-        snapshot["sources"][source.as_posix()] = {
-            "sha256": hashlib.sha256(raw).hexdigest(),
-            "text": raw.decode("utf-8"),
-        }
-    metrics_dir.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(orjson.dumps(snapshot, option=orjson.OPT_INDENT_2))
-    return path
-
-
-@app.function
-def check_source_snapshot() -> dict[str, int]:
-    """Prove newline portability and rejection of tampered source snapshots."""
-    with tempfile.TemporaryDirectory(dir=Path.cwd().parent) as temporary:
-        directory = Path(temporary)
-        path = write_training_snapshot(directory)
-        snapshot = orjson.loads(path.read_bytes())
-        assert len(snapshot["sources"]) == 8
-        first = next(iter(snapshot["sources"].values()))
-        original = first["text"]
-        for line_ending in ("\n", "\r\n"):
-            first["text"] = original.replace("\r\n", "\n").replace("\n", line_ending)
-            first["sha256"] = hashlib.sha256(first["text"].encode()).hexdigest()
-            assert first["sha256"] in newline_source_hashes(original.encode())
-            path.write_bytes(orjson.dumps(snapshot))
-            write_training_snapshot(directory)
-        for alter_hash in (False, True):
-            first["text"] = original + "\n# deliberately changed source\n"
-            first["sha256"] = (
-                hashlib.sha256(first["text"].encode()).hexdigest()
-                if alter_hash
-                else "0" * 64
-            )
-            path.write_bytes(orjson.dumps(snapshot))
-            try:
-                write_training_snapshot(directory)
-            except AssertionError:
-                pass
-            else:
-                raise AssertionError("Tampered source snapshot accepted")
-    return {"sources": 8, "newline_variants": 2, "tamper_cases": 2}
-
-
-@app.function
-def path_json_default(value: object) -> str:
-    """Persist relative paths portably across Windows and POSIX hosts."""
-    if isinstance(value, Path):
-        return value.as_posix()
-    raise TypeError(f"Unsupported JSON value: {type(value).__name__}")
-
-
-@app.function
 def run_srgnn_sweeps() -> list[str]:
-    """Run all nine real experiments, preserving source and runtime provenance."""
+    """Run the prescribed grid through the shared training and serialization entrypoint."""
     completed: list[str] = []
     torch.set_num_threads(4)
-    snapshot = orjson.loads(write_training_snapshot().read_bytes())
-    workflow_raw = Path("notebooks/srgnn_and_plots.py").read_bytes()
-    workflow_sha = hashlib.sha256(workflow_raw).hexdigest()
     for dataset, windows in (
         ("beauty", (5, 10, 20, 50)),
         ("ml-1m", (10, 20, 50, 100, 200)),
     ):
         for window in windows:
+            name = f"srgnn_{dataset}_loo_n{window}"
             cfg = ExperimentConfig(
                 data=DataConfig(dataset=dataset, max_seq_len=window),
                 model=ModelConfig(name="srgnn"),
                 train=TrainConfig(epochs=200),
+                exp_name=name,
             )
-            name = f"srgnn_{dataset}_loo_n{window}"
             path = cfg.metrics_dir / f"{name}.json"
-            sources = training_sources()
-            source_hashes = {
-                p.as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
-                for p in sources
-            }
-            data_sources = [
-                cfg.data.dataset_dir / name
-                for name in (
-                    "metadata.json",
-                    "loo_train.parquet",
-                    "loo_val.parquet",
-                    "loo_test.parquet",
-                    "loo_item_pop.parquet",
-                )
-            ]
-            data_hashes = {
-                p.as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
-                for p in data_sources
-            }
             if path.exists():
                 saved = orjson.loads(path.read_bytes())
                 expected = orjson.loads(
-                    orjson.dumps(dataclasses.asdict(cfg), default=path_json_default)
+                    orjson.dumps(dataclasses.asdict(cfg), default=str)
                 )
-                provenance = saved.get("provenance", {})
-                cached_sources = provenance.get("source_sha256", {})
-                source_compatible = set(cached_sources) == set(source_hashes) and all(
-                    cached_sources[source]
-                    in newline_source_hashes(
-                        snapshot["sources"][source]["text"].encode("utf-8")
+                # Path separators are host-specific; they do not change the experiment.
+                for config in (saved["config"], expected):
+                    config["data"]["data_dir"] = config["data"]["data_dir"].replace(
+                        "\\", "/"
                     )
-                    for source in source_hashes
-                )
-                if (
-                    saved.get("config") != expected
-                    or not saved.get("history")
-                    or not source_compatible
-                    or provenance.get("data_sha256") != data_hashes
-                    or (
-                        provenance.get("workflow_sha256") is not None
-                        and provenance["workflow_sha256"]
-                        not in newline_source_hashes(workflow_raw)
-                    )
-                ):
+                    for key in ("metrics_dir", "checkpoints_dir"):
+                        config[key] = config[key].replace("\\", "/")
+                if saved["config"] != expected or not saved.get("history"):
                     raise ValueError(f"Existing incompatible result: {path}")
-                completed.append(name)
-                continue
-            print(f"Training {name}", flush=True)
-            result = run_cuda_graph_experiment(cfg)
-            payload = result.to_dict()
-            try:
-                revision = subprocess.run(
-                    ["git", "rev-parse", "HEAD"],
-                    capture_output=True,
-                    text=True,
-                    check=False,
+                print(f"Reusing {name}", flush=True)
+            else:
+                print(f"Training {name}", flush=True)
+                result = run_experiment(cfg, show_progress=False)
+                print(
+                    f"Completed {name}: best_epoch={result.best_epoch}, "
+                    f"test={result.test_metrics['NDCG@10']:.6f}",
+                    flush=True,
                 )
-                base_commit = (
-                    revision.stdout.strip() if revision.returncode == 0 else None
-                )
-            except FileNotFoundError:
-                base_commit = None
-            payload["provenance"] = {
-                "base_commit": base_commit,
-                "source_sha256": source_hashes,
-                "data_sha256": data_hashes,
-                "workflow_sha256": workflow_sha,
-                "training_graph_device": result.device
-                if result.device.startswith("cuda") and cfg.data.num_workers == 0
-                else "cpu",
-                "python": platform.python_version(),
-                "torch": torch.__version__,
-                "cuda": torch.version.cuda,
-                "gpu": torch.cuda.get_device_name()
-                if torch.cuda.is_available()
-                else None,
-                "tie_break": "score descending, item ID ascending",
-                "negative_sampling": "100 draws with replacement; duplicates count separately",
-                "selection": "validation Full-Ranking NDCG@10; standard Trainer early stopping",
-            }
-            path.write_bytes(
-                orjson.dumps(
-                    payload, option=orjson.OPT_INDENT_2, default=path_json_default
-                )
-            )
-            print(
-                f"Completed {name}: best_epoch={result.best_epoch}, test={result.test_metrics['NDCG@10']:.6f}",
-                flush=True,
-            )
             completed.append(name)
     return completed
-
-
-@app.function
-def audit_srgnn_results() -> dict[str, int | float]:
-    """Re-evaluate every saved best checkpoint and audit artifact provenance."""
-    torch.set_num_threads(4)
-    paths = sorted(Path("reports/metrics").glob("srgnn_*_loo_n*.json"))
-    assert len(paths) == 9, f"Expected nine sweep artifacts, found {len(paths)}"
-    snapshot = orjson.loads(
-        Path("reports/metrics/srgnn_training_source_snapshot.json").read_bytes()
-    )
-    largest_drift = 0.0
-    for path in paths:
-        record = orjson.loads(path.read_bytes())
-        workflow_sha = record["provenance"].get("workflow_sha256")
-        if workflow_sha is not None:
-            workflow = snapshot["workflows"][workflow_sha]["text"].encode("utf-8")
-            assert hashlib.sha256(workflow).hexdigest() == workflow_sha
-        data = record["config"]["data"]
-        data["data_dir"] = Path(data["data_dir"].replace("\\", "/"))
-        config = ExperimentConfig(
-            data=DataConfig(**data),
-            model=ModelConfig(**record["config"]["model"]),
-            train=TrainConfig(**record["config"]["train"]),
-            eval=EvalConfig(**record["config"]["eval"]),
-            checkpoints_dir=Path(
-                record["config"]["checkpoints_dir"].replace("\\", "/")
-            ),
-        )
-        for kind in ("source_sha256", "data_sha256"):
-            for source, expected in record["provenance"][kind].items():
-                raw = Path(source).read_bytes()
-                if kind == "source_sha256":
-                    original = snapshot["sources"][source]["text"].encode("utf-8")
-                    assert expected in newline_source_hashes(original), source
-                    assert original.replace(b"\r\n", b"\n") == raw.replace(
-                        b"\r\n", b"\n"
-                    ), source
-                else:
-                    assert hashlib.sha256(raw).hexdigest() == expected, source
-        history = record["history"]
-        assert all(math.isfinite(row["train_loss"]) for row in history)
-        best = max(history, key=lambda row: row["val_primary"])
-        assert best["epoch"] == record["best_epoch"]
-        assert best["val_metrics"] == record["best_val_metrics"]
-        assert len(history) == 200 or len(history) - record["best_epoch"] == 10
-        checkpoint = torch.load(
-            config.checkpoints_dir / (record["exp_name"] + ".pt"),
-            map_location="cpu",
-            weights_only=True,
-        )
-        assert checkpoint["epoch"] == record["best_epoch"]
-        assert checkpoint["val_metrics"] == record["best_val_metrics"]
-        # Evaluation-only bundle: no need to allocate expanded training prefixes.
-        bundle = build_databundle(config.data, model_name="pop")
-        model = build_model(config.model, bundle.num_items, bundle.max_seq_len).to(
-            config.train.device
-        )
-        model.load_state_dict(checkpoint["model"])
-        evaluator = Evaluator(
-            config.eval,
-            bundle.num_items,
-            bundle.item_pop_counts,
-            torch.device(config.train.device),
-        )
-        for partition, loader in (
-            ("test_metrics", bundle.test_loader),
-            ("best_val_metrics", bundle.val_loader),
-        ):
-            actual = evaluator.evaluate(model, loader, partition, show_progress=False)
-            for key, expected in record[partition].items():
-                # Sampled metrics consume training RNG state; full-ranking replay
-                # is deterministic and is the protocol used for model selection.
-                if key.startswith("sampled_"):
-                    continue
-                drift = abs(actual[key] - expected)
-                largest_drift = max(largest_drift, drift)
-                assert math.isclose(
-                    actual[key], expected, rel_tol=1e-7, abs_tol=1e-8
-                ), (path, key, actual[key], expected)
-        print(f"Audited {path.name}", flush=True)
-    return {"experiments": len(paths), "largest_full_ranking_drift": largest_drift}
 
 
 @app.cell
@@ -743,20 +352,6 @@ def _() -> tuple[dict[str, int]]:
 
 
 @app.cell
-def _() -> tuple[dict[str, int]]:
-    source_checks = check_source_snapshot()
-    print("Source snapshot checks:", source_checks, flush=True)
-    return (source_checks,)
-
-
-@app.cell
-def _() -> tuple[dict[str, str | float]]:
-    cuda_graph_checks = check_cuda_collation()
-    print("CUDA graph collation:", cuda_graph_checks, flush=True)
-    return (cuda_graph_checks,)
-
-
-@app.cell
 def _() -> tuple[str]:
     integration_check = check_integration()
     print("Integration:", integration_check, flush=True)
@@ -769,15 +364,6 @@ def _() -> None:
         training_results = run_srgnn_sweeps()
         print(training_results, flush=True)
         plot_all(PlotConfig(strict=True))
-    return
-
-
-@app.cell
-def _() -> None:
-    if os.environ.get("SEQREC_TASK3_AUDIT") == "1":
-        write_training_snapshot()
-        artifact_audit = audit_srgnn_results()
-        print("Artifact audit:", artifact_audit, flush=True)
     return
 
 

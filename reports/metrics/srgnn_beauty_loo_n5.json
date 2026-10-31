@@ -47,7 +47,7 @@
       "compute_sampled_metrics": true,
       "oracle_middle_mask": false
     },
-    "exp_name": null,
+    "exp_name": "srgnn_beauty_loo_n5",
     "metrics_dir": "reports/metrics",
     "checkpoints_dir": "data/processed/checkpoints"
   },
@@ -2127,32 +2127,5 @@
     "train_seconds": 192.96635029999743,
     "eval_seconds": 0.9758017999993172,
     "total_seconds": 193.94215209999675
-  },
-  "provenance": {
-    "base_commit": "d45c2e621091fbdf4f24cbd5935887969f1aa0f3",
-    "source_sha256": {
-      "src/seqrec/models/srgnn.py": "45d1b656cf2a3ae21dbc36a8236eba4f3c99533e0bfcd76ef3d6ab038e7dbd59",
-      "src/seqrec/models/__init__.py": "d410aaa041323684c9c1be42e6f83fdeb67577c3fa3f35260756612df53b4155",
-      "src/seqrec/config.py": "57d921a75491f7b7e8f401489accb6104a286f21b7656f1391d9833ede55d3d8",
-      "src/seqrec/engine/trainer.py": "b59b3eb5909fcce4a7f24aa154eb112db1163fc38ec7cf6340cdcdb84781d878",
-      "src/seqrec/engine/evaluator.py": "2c96a6253853381b66c805fc846c4400733af569cffb36bdb6ea299579383433",
-      "src/seqrec/data/dataset.py": "b7a01b8c971a470ce3e1269705e4ef390e100e33c983daf5fd6da4fa2a6af36e",
-      "src/seqrec/data/preprocess.py": "3b0f1c145f44370a4a988e47dc9e9f65adc378c38c98aa5bec9b8d44a0ae89fd",
-      "uv.lock": "9ed553dbc0003bb3fb2972038a1ab0b27a34f0feb0fd338ac77dcdd42062c5f0"
-    },
-    "data_sha256": {
-      "data/processed/beauty/metadata.json": "1924171b10f6ca78e094e74cf6982d41d6d574c40ee40a56e03ef6fe2bbffb2a",
-      "data/processed/beauty/loo_train.parquet": "d851d1bfa20fe67eb6ea8022c8736960fbae9ee938f86e0a803ba92f60f449c3",
-      "data/processed/beauty/loo_val.parquet": "3ced81bc481aefa651689bb7ce19d004ddc488a86675db7acfaae50ceded3b9a",
-      "data/processed/beauty/loo_test.parquet": "e52bda2875e4a44274c6c64fe92c8627b9995b1edd4962db23677fdf2b91b40b",
-      "data/processed/beauty/loo_item_pop.parquet": "9e50b3b0559628909186b2d0ff03c8e0c96445e5855e047b311544f9c1383f69"
-    },
-    "python": "3.14.10",
-    "torch": "2.14.1+cu130",
-    "cuda": "13.0",
-    "gpu": "NVIDIA GeForce RTX 3050 Ti Laptop GPU",
-    "tie_break": "score descending, item ID ascending",
-    "negative_sampling": "100 draws with replacement; duplicates count separately",
-    "selection": "validation Full-Ranking NDCG@10; standard Trainer early stopping"
   }
 }

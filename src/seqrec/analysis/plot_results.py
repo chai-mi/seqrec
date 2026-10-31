@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 import altair as alt
 import orjson
@@ -32,6 +32,7 @@ MODELS: dict[str, str] = {
 MODEL_ORDER = list(MODELS.values())
 COLORS = ["#7f7f7f", "#0072B2", "#D55E00", "#009E73", "#CC79A7"]
 METRICS = ("HR@10", "NDCG@10")
+MAIN_BERT_MASK_RATIO = 0.1
 WINDOWS = {"beauty": (5, 10, 20, 50), "ml-1m": (10, 20, 50, 100, 200)}
 SCHEMA = {
     "dataset": pl.String,
@@ -115,7 +116,9 @@ def read_metrics(metrics_dir: Path, seed: int = 42) -> pl.DataFrame:
             continue
         window = data["max_seq_len"] or default_max_seq_len(dataset)
         mask_ratio = (
-            float(data.get("last_item_mask_ratio", 0.1)) if name == "bert4rec" else 0.1
+            float(data.get("last_item_mask_ratio", MAIN_BERT_MASK_RATIO))
+            if name == "bert4rec"
+            else None
         )
         identity = (dataset, name, data["split_strategy"], window, seed, mask_ratio)
         if identity in identities:
@@ -220,12 +223,19 @@ def read_metrics(metrics_dir: Path, seed: int = 42) -> pl.DataFrame:
     )
 
 
+def main_model_filter() -> pl.Expr:
+    """Keep every non-mask model; select the default last-item ratio only for BERT4Rec."""
+    return (pl.col("model") != "BERT4Rec") | (
+        pl.col("mask_ratio") == MAIN_BERT_MASK_RATIO
+    )
+
+
 def select_main(frame: pl.DataFrame, default_window: bool = True) -> pl.LazyFrame:
     """Select standard test LOO results; use prescribed windows, never test-best N."""
     query = frame.lazy().filter(
         (pl.col("partition") == "test")
         & (pl.col("split") == "loo")
-        & (pl.col("mask_ratio") == 0.1)
+        & main_model_filter()
     )
     if default_window:
         query = query.filter(
@@ -302,16 +312,16 @@ def format_table(
             "| " + " | ".join(["---"] * len(rows[0])) + " |",
         ]
         return "\n".join(lines + ["| " + " | ".join(row) + " |" for row in rows[1:]])
-    cells = [
-        "  [#text(" + orjson.dumps(cell).decode() + ")],"
-        for row in rows
-        for cell in row
-    ]
+    escape = str.maketrans({char: "\\" + char for char in "\\[]#@$*_`<>"})
+    cells = [f"  [{cell.translate(escape)}]," for row in rows for cell in row]
     return f"#table(columns: {len(rows[0])},\n" + "\n".join(cells) + "\n)"
 
 
 def chart_base(frame: pl.DataFrame) -> alt.Chart:
-    """Use inline records, avoiding pandas and process-global Altair settings."""
+    """Use inline records, avoiding pandas and process-global Altair settings.
+
+    Local ty suppressions below cover Altair's generic ``mark_*`` return types.
+    """
     return alt.Chart(alt.Data(values=frame.to_dicts()))
 
 
@@ -330,10 +340,10 @@ def model_color(models: list[str] | None = None) -> alt.Color:
 
 def grouped_chart(
     frame: pl.DataFrame, title: str, bucket_order: list[str], subtitle: str
-) -> Any:
+) -> alt.FacetChart:
     """Make paired dataset/metric facets with a stable bucket and model order."""
     base = chart_base(frame)
-    bars = cast(alt.Chart, base.mark_bar()).encode(
+    bars = base.mark_bar().encode(  # ty: ignore[unresolved-attribute]
         x=alt.X("bucket:N", sort=bucket_order, title=None, axis=alt.Axis(labelAngle=0)),
         xOffset=alt.XOffset("model:N", sort=MODEL_ORDER),
         y=alt.Y("value:Q", title=None, scale=alt.Scale(zero=True)),
@@ -349,10 +359,7 @@ def grouped_chart(
         ],
     )
     empty = (
-        cast(
-            alt.Chart,
-            base.mark_text(text="N/A", color="#555555", fontSize=11),
-        )
+        base.mark_text(text="N/A", color="#555555", fontSize=11)  # ty: ignore[unresolved-attribute]
         .transform_filter("datum.count === 0")
         .transform_aggregate(groupby=["dataset", "metric", "bucket"])
         .encode(x=alt.X("bucket:N", sort=bucket_order), y=alt.value(190))
@@ -372,7 +379,7 @@ def grouped_chart(
     )
 
 
-def length_table_chart(frame: pl.DataFrame) -> Any:
+def length_table_chart(frame: pl.DataFrame) -> alt.FacetChart:
     """Export the numeric three-dimensional comparison table as a vector figure."""
     cells = pl.DataFrame(
         [
@@ -406,8 +413,8 @@ def length_table_chart(frame: pl.DataFrame) -> Any:
     )
     return (
         (
-            cast(alt.Chart, base.mark_rect(color="#edf3f7"))
-            + cast(alt.Chart, base.mark_text(fontSize=12)).encode(text="label:N")
+            base.mark_rect(color="#edf3f7")
+            + base.mark_text(fontSize=12).encode(text="label:N")  # ty: ignore[unresolved-attribute]
         )
         .properties(
             width=370,
@@ -486,30 +493,34 @@ def mask_ablation_frame(frame: pl.DataFrame, metrics_dir: Path) -> pl.DataFrame:
     return pl.DataFrame(rows, schema={**SCHEMA, "protocol": pl.String})
 
 
-def build_charts(frame: pl.DataFrame, metrics_dir: Path) -> dict[str, Any]:
-    """Build all study figures from actual available observations."""
-    charts: dict[str, Any] = {"length_table": length_table_chart(frame)}
-    main = select_main(frame)
-    lengths, popularity = pl.collect_all(
-        [
-            main.filter(pl.col("group") == "len"),
-            main.filter(pl.col("group") == "pop"),
-        ]
+def length_buckets_chart(frame: pl.DataFrame) -> alt.FacetChart | None:
+    """Compare model accuracy across untruncated history buckets."""
+    lengths = select_main(frame).filter(pl.col("group") == "len").collect()
+    if lengths.is_empty():
+        return None
+    return grouped_chart(
+        lengths,
+        "Performance by history length",
+        list(LEN_BUCKETS),
+        "Buckets use untruncated history; test Full-Ranking, one selected seed",
     )
-    if lengths.height:
-        charts["length_buckets"] = grouped_chart(
-            lengths,
-            "Performance by history length",
-            list(LEN_BUCKETS),
-            "Buckets use untruncated history; test Full-Ranking, one selected seed",
-        )
-    if popularity.height:
-        charts["popularity_buckets"] = grouped_chart(
-            popularity,
-            "Long-tail retrieval",
-            list(POP_BUCKETS),
-            "Item-count quantiles: Head 20% / Mid 30% / Tail 50%; train-only frequency",
-        )
+
+
+def popularity_buckets_chart(frame: pl.DataFrame) -> alt.FacetChart | None:
+    """Compare retrieval across target-item popularity buckets."""
+    popularity = select_main(frame).filter(pl.col("group") == "pop").collect()
+    if popularity.is_empty():
+        return None
+    return grouped_chart(
+        popularity,
+        "Long-tail retrieval",
+        list(POP_BUCKETS),
+        "Item-count quantiles: Head 20% / Mid 30% / Tail 50%; train-only frequency",
+    )
+
+
+def window_sensitivity_chart(frame: pl.DataFrame) -> alt.FacetChart | None:
+    """Compare the prescribed truncation-window sweeps."""
     windows = (
         select_main(frame, default_window=False)
         .filter(
@@ -520,8 +531,9 @@ def build_charts(frame: pl.DataFrame, metrics_dir: Path) -> dict[str, Any]:
         .collect()
     )
     if windows.height:
-        charts["window_sensitivity"] = (
-            cast(alt.Chart, chart_base(windows).mark_line(point=True))
+        return (
+            chart_base(windows)  # ty: ignore[unresolved-attribute]
+            .mark_line(point=True)
             .encode(
                 x=alt.X(
                     "window:Q",
@@ -544,6 +556,12 @@ def build_charts(frame: pl.DataFrame, metrics_dir: Path) -> dict[str, Any]:
             .facet(column="dataset:N", row="metric:N")
             .properties(title="Window N sensitivity (test Full-Ranking)")
         )
+    return None
+
+
+def popularity_coverage_chart(frame: pl.DataFrame) -> alt.FacetChart | None:
+    """Plot recommendation popularity against catalog coverage."""
+    main = select_main(frame)
     bias = main.filter(
         (pl.col("group") == "overall")
         & pl.col("metric").is_in(["ARP@10", "Coverage@10"])
@@ -571,8 +589,8 @@ def build_charts(frame: pl.DataFrame, metrics_dir: Path) -> dict[str, Any]:
             y=alt.Y("coverage:Q", title="Coverage@10", scale=alt.Scale(domain=[0, 1])),
             color=model_color(),
         )
-        charts["popularity_coverage"] = (
-            cast(alt.Chart, base.mark_point(size=140, filled=True))
+        return (
+            base.mark_point(size=140, filled=True)  # ty: ignore[unresolved-attribute]
             .encode(
                 shape=alt.Shape(
                     "model:N",
@@ -587,10 +605,18 @@ def build_charts(frame: pl.DataFrame, metrics_dir: Path) -> dict[str, Any]:
             .resolve_scale(x="independent")
             .properties(title="Popularity bias and catalog coverage")
         )
+    return None
+
+
+def bert4rec_masks_chart(
+    frame: pl.DataFrame, metrics_dir: Path
+) -> alt.FacetChart | None:
+    """Compare BERT4Rec mask strategies and Oracle diagnostics."""
     masks = mask_ablation_frame(frame, metrics_dir)
     if masks.height:
-        charts["bert4rec_masks"] = (
-            cast(alt.Chart, chart_base(masks).mark_line(point=True))
+        return (
+            chart_base(masks)  # ty: ignore[unresolved-attribute]
+            .mark_line(point=True)
             .encode(
                 x=alt.X("mask_ratio:O", title="Last-item mask ratio"),
                 y=alt.Y("value:Q", title=None, scale=alt.Scale(zero=True)),
@@ -616,12 +642,17 @@ def build_charts(frame: pl.DataFrame, metrics_dir: Path) -> dict[str, Any]:
                 )
             )
         )
+    return None
+
+
+def split_decay_chart(frame: pl.DataFrame) -> alt.FacetChart | None:
+    """Compare paired LOO and temporal experiments at the default windows."""
     splits = (
         frame.lazy()
         .filter(
             (pl.col("partition") == "test")
             & (pl.col("group") == "overall")
-            & (pl.col("mask_ratio") == 0.1)
+            & main_model_filter()
             & pl.col("metric").is_in(METRICS)
             & (
                 ((pl.col("dataset") == "beauty") & (pl.col("window") == 50))
@@ -652,8 +683,9 @@ def build_charts(frame: pl.DataFrame, metrics_dir: Path) -> dict[str, Any]:
         paired_models = [
             name for name in MODEL_ORDER if name in set(paired["model"].to_list())
         ]
-        charts["split_decay"] = (
-            cast(alt.Chart, chart_base(paired).mark_bar())
+        return (
+            chart_base(paired)  # ty: ignore[unresolved-attribute]
+            .mark_bar()
             .encode(
                 x=alt.X(
                     "model:N",
@@ -683,6 +715,12 @@ def build_charts(frame: pl.DataFrame, metrics_dir: Path) -> dict[str, Any]:
                 )
             )
         )
+    return None
+
+
+def sampled_ranking_chart(frame: pl.DataFrame) -> alt.FacetChart | None:
+    """Compare full ranking with both negative-sampling strategies."""
+    main = select_main(frame)
     sampled = (
         main.filter(
             pl.col("group").is_in(["overall", "sampled"])
@@ -708,8 +746,9 @@ def build_charts(frame: pl.DataFrame, metrics_dir: Path) -> dict[str, Any]:
         .collect()
         .height
     ):
-        charts["sampled_ranking"] = (
-            cast(alt.Chart, chart_base(sampled).mark_bar())
+        return (
+            chart_base(sampled)  # ty: ignore[unresolved-attribute]
+            .mark_bar()
             .encode(
                 x=alt.X(
                     "model:N",
@@ -740,10 +779,25 @@ def build_charts(frame: pl.DataFrame, metrics_dir: Path) -> dict[str, Any]:
                 )
             )
         )
-    return charts
+    return None
 
 
-def export_charts(charts: dict[str, Any], figures_dir: Path) -> list[Path]:
+def build_charts(frame: pl.DataFrame, metrics_dir: Path) -> dict[str, alt.FacetChart]:
+    """Assemble the independently defined study figures that have observations."""
+    candidates = {
+        "length_table": length_table_chart(frame),
+        "length_buckets": length_buckets_chart(frame),
+        "popularity_buckets": popularity_buckets_chart(frame),
+        "window_sensitivity": window_sensitivity_chart(frame),
+        "popularity_coverage": popularity_coverage_chart(frame),
+        "bert4rec_masks": bert4rec_masks_chart(frame, metrics_dir),
+        "split_decay": split_decay_chart(frame),
+        "sampled_ranking": sampled_ranking_chart(frame),
+    }
+    return {name: chart for name, chart in candidates.items() if chart is not None}
+
+
+def export_charts(charts: dict[str, alt.FacetChart], figures_dir: Path) -> list[Path]:
     """Convert Vega-Lite directly to SVG/PDF, using local vector rendering."""
     figures_dir.mkdir(parents=True, exist_ok=True)
     outputs: list[Path] = []

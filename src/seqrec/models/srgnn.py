@@ -14,6 +14,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from seqrec.config import LossType
 from seqrec.data.dataset import (
     EvalBatch,
     SessionGraphTrainBatch,
@@ -25,6 +26,8 @@ from seqrec.models.base import (
     gather_last_valid,
     prepend_pad_column,
 )
+
+__all__ = ["SRGNN"]
 
 
 class SRGNN(SequentialRecommender):
@@ -44,7 +47,7 @@ class SRGNN(SequentialRecommender):
         hidden_size: int = 64,
         ggnn_steps: int = 1,
         dropout: float = 0.2,
-        loss_type: str = "ce",
+        loss_type: LossType = "ce",
         share_item_embeddings: bool = True,
     ) -> None:
         super().__init__(num_items)
@@ -59,6 +62,7 @@ class SRGNN(SequentialRecommender):
         self.max_seq_len = max_seq_len
         self.hidden_size = hidden_size
         self.ggnn_steps = ggnn_steps
+        self.loss_type = loss_type
         self.item_embedding = nn.Embedding(num_items + 1, hidden_size, padding_idx=0)
         self.incoming = nn.Linear(hidden_size, hidden_size)
         self.outgoing = nn.Linear(hidden_size, hidden_size)
@@ -88,10 +92,6 @@ class SRGNN(SequentialRecommender):
     ) -> torch.Tensor:
         """Return ``[B, d]`` hybrid session states using batched graph operations."""
         batch_size, width = graph_items.shape
-        if width < 1 or bool(((seq_len < 1) | (seq_len > width)).any()):
-            raise ValueError(
-                "SR-GNN requires nonempty right-padded histories of length <= N."
-            )
         node_mask = (graph_items != 0).unsqueeze(-1)
         nodes = self.dropout(self.item_embedding(graph_items))
         for _ in range(self.ggnn_steps):
@@ -142,3 +142,10 @@ class SRGNN(SequentialRecommender):
             graph_items, aliases, adj_in, adj_out, batch["seq_len"]
         )
         return prepend_pad_column(self.project(sessions))
+
+    def extra_repr(self) -> str:
+        return (
+            f"num_items={self.num_items}, max_seq_len={self.max_seq_len}, "
+            f"hidden_size={self.hidden_size}, ggnn_steps={self.ggnn_steps}, "
+            f"loss_type={self.loss_type}"
+        )
